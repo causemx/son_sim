@@ -1,11 +1,15 @@
+import json
+import socket
+import struct
+import threading
 from node_base import Node, NodeType
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
-                           QHBoxLayout, QLabel, QPushButton, QTextEdit)
-from PyQt5.QtCore import Qt, QTimer, pyqtSignal, QThread
-from PyQt5.QtGui import QPainter, QColor, QPen, QBrush
+                           QHBoxLayout, QLabel, QTextEdit)
+from PyQt5.QtCore import pyqtSignal, QThread
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
 import matplotlib.pyplot as plt
+import matplotlib.patches as mpatches
 import sys
 import time
 import math
@@ -16,9 +20,9 @@ class NetworkVisualizerWidget(QWidget):
         self.setMinimumSize(400, 300)
         self.nodes = {}
         self.last_heartbeat = {}
-        self.center_x = 0  # Will use normalized coordinates
-        self.center_y = 0
-        self.radius = 0.8  # Use normalized radius
+        self.center_x = 2.5  # New center point
+        self.center_y = 2.5  # New center point
+        self.radius = 1.5    # Adjusted radius for new coordinate system
         
         # Create the figure and canvas
         self.figure = Figure(figsize=(6, 4))
@@ -30,11 +34,25 @@ class NetworkVisualizerWidget(QWidget):
         layout.addWidget(self.canvas)
         self.setLayout(layout)
         
-        # Configure plot
-        self.ax.set_xlim(-1.2, 1.2)
-        self.ax.set_ylim(-1.2, 1.2)
+        # Configure plot with new coordinate system
+        self.ax.set_xlim(0, 5)
+        self.ax.set_ylim(0, 5)
         self.ax.set_aspect('equal')
-        self.ax.axis('off')
+        self.ax.axis('on')  # Show axes
+        self.ax.grid(True)  # Add grid
+        
+        # Add legend
+        self._create_legend()
+
+    def _create_legend(self):
+        # Create legend patches
+        master_patch = mpatches.Patch(color='r', label='Master Node')
+        active_patch = mpatches.Patch(color='g', label='Active Node')
+        inactive_patch = mpatches.Patch(color='gray', label='Inactive Node')
+        
+        # Add legend to the plot
+        self.ax.legend(handles=[master_patch, active_patch, inactive_patch],
+                      loc='upper right', bbox_to_anchor=(1.1, 1.1))
 
     def addNode(self, port, node_type):
         node_id = port % 1000
@@ -51,7 +69,7 @@ class NetworkVisualizerWidget(QWidget):
             "pos": pos,
             "type": node_type,
             "status": "Active",
-            "color": 'g',  # Default green for nodes
+            "color": 'g',
             "port": port,
             "is_master": False,
             "last_seen": time.time()
@@ -62,11 +80,11 @@ class NetworkVisualizerWidget(QWidget):
         for node in self.nodes.values():
             if node["status"] == "Active":
                 node["is_master"] = False
-                node["color"] = 'g'  # Green for regular nodes
+                node["color"] = 'g'
 
         if master_id in self.nodes and self.nodes[master_id]["status"] == "Active":
             self.nodes[master_id]["is_master"] = True
-            self.nodes[master_id]["color"] = 'r'  # Red for master
+            self.nodes[master_id]["color"] = 'r'
         self._redraw()
 
     def updateNodeStatus(self, node_id, status):
@@ -89,18 +107,13 @@ class NetworkVisualizerWidget(QWidget):
             
             self._redraw()
 
-    def checkNodeStatus(self):
-        current_time = time.time()
-        for node_id, node in self.nodes.items():
-            if node["status"] == "Active" and current_time - node["last_seen"] > 3:
-                self.updateNodeStatus(node_id, "Inactive")
-
     def _redraw(self):
         self.ax.clear()
-        self.ax.set_xlim(-1.2, 1.2)
-        self.ax.set_ylim(-1.2, 1.2)
+        self.ax.set_xlim(0, 5)
+        self.ax.set_ylim(0, 5)
         self.ax.set_aspect('equal')
-        self.ax.axis('off')
+        self.ax.axis('on')
+        self.ax.grid(True)
 
         # Draw connections between active nodes
         active_nodes = [(nid, node) for nid, node in self.nodes.items() 
@@ -116,15 +129,20 @@ class NetworkVisualizerWidget(QWidget):
 
         # Draw nodes
         for node_id, node in self.nodes.items():
-            # Draw node circle
-            circle = plt.Circle(node["pos"], 0.15, color=node["color"], 
+            # Set color based on status
+            if node["status"] != "Active":
+                node_color = 'gray'
+            else:
+                node_color = 'r' if node["is_master"] else 'g'
+            
+            circle = plt.Circle(node["pos"], 0.2, color=node_color, 
                               ec='black', zorder=2)
             self.ax.add_artist(circle)
             
-            # Add node labels
             status_text = "Master" if node["is_master"] else "Node"
             if node["status"] != "Active":
                 status_text = "Inactive"
+                print(f"Drawing inactive node {node_id} with gray color")  # Debug log
                 
             self.ax.annotate(f'Port {node["port"]}\n({status_text})',
                            xy=node["pos"], xytext=(0, 0),
@@ -132,6 +150,12 @@ class NetworkVisualizerWidget(QWidget):
                            ha='center', va='center',
                            color='black', zorder=3)
 
+        # Add axis labels
+        self.ax.set_xlabel('X-axis')
+        self.ax.set_ylabel('Y-axis')
+        
+        # Recreate legend
+        self._create_legend()
         self.figure.canvas.draw()
 
 class MonitorThread(QThread):
@@ -150,13 +174,12 @@ class MonitorThread(QThread):
         # Create monitor node
         self.monitor_node = Node(5000, NodeType.MONITOR)
         self.node_added.emit(5000, "MONITOR")
-        self.known_nodes.add(0)  # Add monitor's node_id (5000 % 1000 = 0)
+        self.known_nodes.add(0)
 
         def new_process_message(message):
             msg_type = message['type']
             from_node = message['from']
             
-            # Add new node when first message is received
             if from_node not in self.known_nodes:
                 self.node_added.emit(5000 + from_node, "NODE")
                 self.known_nodes.add(from_node)
@@ -165,13 +188,12 @@ class MonitorThread(QThread):
             if msg_type == 'HEARTBEAT':
                 self.master_changed.emit(from_node)
             elif msg_type == 'ELECTION':
-                self.message_received.emit(f"Election process started")
+                self.message_received.emit("Election process started")
             elif msg_type == 'NEW_MASTER':
                 new_master = message['data']['master_id']
                 self.message_received.emit(f"Node {new_master} became master")
                 self.master_changed.emit(new_master)
 
-        # Override message processing
         self.monitor_node._process_message = new_process_message
         self.monitor_node.start()
         self.is_running = True
@@ -180,7 +202,7 @@ class MonitorThread(QThread):
             time.sleep(1)
             current_time = time.time()
             for node_id in self.known_nodes:
-                if node_id != 0:  # Skip monitor node
+                if node_id != 0:
                     if node_id in self.monitor_node.last_heartbeat:
                         if current_time - self.monitor_node.last_heartbeat[node_id] > 3:
                             self.node_status_changed.emit(node_id, "Inactive")
@@ -204,21 +226,29 @@ class MonitorGUI(QMainWindow):
         self.setCentralWidget(central_widget)
         layout = QHBoxLayout(central_widget)
 
-        # Create network visualizer
-        self.network_viz = NetworkVisualizerWidget()
-        layout.addWidget(self.network_viz)
+        # Create left panel for event log
+        left_panel = QWidget()
+        left_layout = QVBoxLayout(left_panel)
+        layout.addWidget(left_panel)
 
-        # Create right panel
-        right_panel = QWidget()
-        right_layout = QVBoxLayout(right_panel)
-        layout.addWidget(right_panel)
-
-        # Add event log
-        log_label = QLabel("Event Log:")
+        # Add event log to left panel
+        log_label = QLabel("Event Log")
+        log_label.setStyleSheet("""
+            font-weight: bold;
+            font-size: 14px;
+            padding: 5px;
+            background-color: #fcba03;
+            border-radius: 5px;
+        """)
         self.log_text = QTextEdit()
         self.log_text.setReadOnly(True)
-        right_layout.addWidget(log_label)
-        right_layout.addWidget(self.log_text)
+        self.log_text.setMinimumWidth(250)  # Set minimum width for log panel
+        left_layout.addWidget(log_label)
+        left_layout.addWidget(self.log_text)
+
+        # Create network visualizer (now on the right)
+        self.network_viz = NetworkVisualizerWidget()
+        layout.addWidget(self.network_viz)
 
         # Start monitor thread
         self.monitor_thread = MonitorThread()
@@ -235,8 +265,65 @@ class MonitorGUI(QMainWindow):
         self.monitor_thread.stop()
         event.accept()
 
+
+class Message:
+    def __init__(self, version=None, port=None, host_int=None, displayname="", namespaces=None):
+        self.version = version
+        self.port = port
+        self.host_int = host_int
+        self.displayname = displayname
+        self.namespaces = namespaces
+
+    def to_dict(self):
+        """Convert the class instance to a dictionary representation"""
+        return {
+            "version": self.version,
+            "port": self.port,
+            "host_int": self.host_int,
+            "displayname": self.displayname,
+            "namespaces": self.namespaces
+        }
+
+    @classmethod
+    def from_dict(cls, data):
+        """Create a class instance from a dictionary"""
+        return cls(
+            version=data.get("version"),
+            port=data.get("port"),
+            host_int=data.get("host_int"),
+            displayname=data.get("displayname"),
+            namespaces=data.get("namespaces")
+        )
+
+def _createReceivingSocket(port):
+    print("[*] start receving position data")
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
+    s.bind(("", port))
+    return s
+
+
+def _handle_udp_messages():
+    s = _createReceivingSocket(17500)
+    while True:
+        data = s.recv(1024).decode()
+        #print(data)
+        data = json.loads(data)
+        income_data_t = Message.from_dict(data)
+        number = income_data_t.host_int
+        # Convert the number to bytes
+        number_bytes =  number.to_bytes((number.bit_length() + 7) // 8, byteorder='big')
+        unpacked_value = struct.unpack('ffff', number_bytes)
+        print(unpacked_value)
+        
+
 if __name__ == "__main__":
     app = QApplication(sys.argv)
+
+    # receive udp incoming position
+    threading.Thread(target=_handle_udp_messages, daemon=True).start()
+
     window = MonitorGUI()
     window.show()
     sys.exit(app.exec_())
