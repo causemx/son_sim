@@ -1,8 +1,3 @@
-import json
-import socket
-import struct
-import threading
-from node_base import Node, NodeType
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
                            QHBoxLayout, QLabel, QTextEdit)
 from PyQt5.QtCore import pyqtSignal, QThread
@@ -10,6 +5,8 @@ from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
+import socket
+import json
 import sys
 import time
 import math
@@ -56,7 +53,6 @@ class NetworkVisualizerWidget(QWidget):
         if node_type == "MONITOR":
             return
             
-        # Default initial position using circle layout
         num_nodes = len([n for n in self.nodes.values() if n["type"] != "MONITOR"])
         angle = (num_nodes * 2 * math.pi) / 3
         x = self.center_x + self.radius * math.cos(angle)
@@ -73,6 +69,7 @@ class NetworkVisualizerWidget(QWidget):
             "last_seen": time.time()
         }
         self._redraw()
+
 
     def updateNodePosition(self, node_id, x, y):
         """Update node position based on received coordinates"""
@@ -165,66 +162,81 @@ class NetworkVisualizerWidget(QWidget):
         self._create_legend()
         self.figure.canvas.draw()
 
-
-class MonitorThread(QThread):
+class NetworkMonitorThread(QThread):
     message_received = pyqtSignal(str)
     node_status_changed = pyqtSignal(int, str)
     node_added = pyqtSignal(int, str)
     master_changed = pyqtSignal(int)
 
-    def __init__(self, parent=None):
+    def __init__(self, host='localhost', port=5567, parent=None):
         super().__init__(parent)
-        self.monitor_node = None
+        self.host = host
+        self.port = port
         self.is_running = False
-        self.known_nodes = set()
+        self.socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.socket.bind((host, port))
 
     def run(self):
-        self.monitor_node = Node(5000, NodeType.MONITOR)
-        self.node_added.emit(5000, "MONITOR")
-        self.known_nodes.add(0)
-
-        def new_process_message(message):
-            msg_type = message['type']
-            from_node = message['from']
-            
-            if from_node not in self.known_nodes:
-                self.node_added.emit(5000 + from_node, "NODE")
-                self.known_nodes.add(from_node)
-                self.message_received.emit(f"Node {from_node} (Port {5000 + from_node}) joined network")
-            
-            if msg_type == 'HEARTBEAT':
-                self.master_changed.emit(from_node)
-            elif msg_type == 'ELECTION':
-                self.message_received.emit("Election process started")
-            elif msg_type == 'NEW_MASTER':
-                new_master = message['data']['master_id']
-                self.message_received.emit(f"Node {new_master} became master")
-                self.master_changed.emit(new_master)
-
-        self.monitor_node._process_message = new_process_message
-        self.monitor_node.start()
         self.is_running = True
-
         while self.is_running:
-            time.sleep(1)
-            current_time = time.time()
-            for node_id in self.known_nodes:
-                if node_id != 0:
-                    if node_id in self.monitor_node.last_heartbeat:
-                        if current_time - self.monitor_node.last_heartbeat[node_id] > 3:
-                            self.node_status_changed.emit(node_id, "Inactive")
-                            self.message_received.emit(f"Node {node_id} became inactive")
-                        elif self.monitor_node.nodes.get(node_id, {}).get("status") == "Inactive":
-                            self.node_status_changed.emit(node_id, "Active")
-                            self.message_received.emit(f"Node {node_id} became active")
+            try:
+                data, addr = self.socket.recvfrom(4096)
+                message = json.loads(data.decode())
+                self.process_message(message)
+            except Exception as e:
+                print(f"Error receiving message: {e}")
+
+    def process_message(self, message):
+        msg_type = message['type']
+        data = message['data']
+
+        if msg_type == 'LOG':
+            self.message_received.emit(data['message'])
+        elif msg_type == 'NODE_ADDED':
+            self.node_added.emit(data['port'], data['node_type'])
+        elif msg_type == 'NODE_STATUS':
+            self.node_status_changed.emit(data['node_id'], data['status'])
+        elif msg_type == 'MASTER_CHANGED':
+            self.master_changed.emit(data['master_id'])
 
     def stop(self):
         self.is_running = False
-        if self.monitor_node:
-            self.monitor_node.stop()
+        self.socket.close()
+
+class PositionReceiverThread(QThread):
+    position_updated = pyqtSignal(int, float, float)
+    
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.is_running = False
+        
+    def run(self):
+        self.is_running = True
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
+        sock.bind(("", 17500))
+        
+        while self.is_running:
+            try:
+                data, addr = sock.recvfrom(1024)
+                message = json.loads(data.decode())
+                
+                if all(key in message for key in ["id", "x", "y"]):
+                    node_id = message["id"]
+                    x = float(message["x"])
+                    y = float(message["y"])
+                    self.position_updated.emit(node_id, x, y)
+            except Exception as e:
+                print(f"Error receiving position data: {e}")
+                
+        sock.close()
+        
+    def stop(self):
+        self.is_running = False
 
 class MonitorGUI(QMainWindow):
-    def __init__(self):
+    def __init__(self, host='localhost', port=5567):
         super().__init__()
         self.setWindowTitle("Network Monitor")
         self.setMinimumSize(800, 600)
@@ -258,23 +270,31 @@ class MonitorGUI(QMainWindow):
         layout.addWidget(self.network_viz)
 
         # Start monitor thread
-        self.monitor_thread = MonitorThread()
+        self.monitor_thread = NetworkMonitorThread(host, port)
         self.monitor_thread.message_received.connect(self.log_message)
         self.monitor_thread.node_status_changed.connect(self.network_viz.updateNodeStatus)
         self.monitor_thread.node_added.connect(self.network_viz.addNode)
         self.monitor_thread.master_changed.connect(self.network_viz.updateMasterStatus)
         self.monitor_thread.start()
 
-        
+        # Start position receiver thread
+        self.position_thread = PositionReceiverThread()
+        self.position_thread.position_updated.connect(self.network_viz.updateNodePosition)
+        self.position_thread.start()
+
     def log_message(self, message):
         self.log_text.append(message)
 
     def closeEvent(self, event):
         self.monitor_thread.stop()
+        self.position_thread.stop()
         event.accept()
 
-if __name__ == "__main__":
+def main():
     app = QApplication(sys.argv)
     window = MonitorGUI()
     window.show()
     sys.exit(app.exec_())
+
+if __name__ == "__main__":
+    main()
