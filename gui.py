@@ -10,6 +10,17 @@ import json
 import sys
 import time
 import math
+import struct
+import logging
+
+
+# Configure logging to only show console output
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s [%(levelname)s] %(message)s',
+    handlers=[logging.StreamHandler(sys.stdout)]
+)
+logger = logging.getLogger(__name__)
 
 class NetworkVisualizerWidget(QWidget):
     def __init__(self, parent=None):
@@ -68,24 +79,29 @@ class NetworkVisualizerWidget(QWidget):
             "is_master": False,
             "last_seen": time.time()
         }
+
+        logger.info(f"Added new node: ID={node_id}, Type={node_type}, Port={port}")
         self._redraw()
 
 
     def updateNodePosition(self, node_id, x, y):
         """Update node position based on received coordinates"""
         if node_id in self.nodes:
-            # Scale received coordinates to our visualization space (0-5)
-            scaled_x = x * 5  # Assuming input x is 0-1
-            scaled_y = y * 5  # Assuming input y is 0-1
+            # Store the coordinates as received, no additional scaling
+            old_pos = self.nodes[node_id]["pos"]
+            self.nodes[node_id]["pos"] = (x, y)
             
-            # Ensure coordinates stay within bounds
-            scaled_x = max(0.2, min(4.8, scaled_x))
-            scaled_y = max(0.2, min(4.8, scaled_y))
+            logger.info(f"Node {node_id} visualization position updated:")
+            logger.info(f"  Old position: ({old_pos[0]:.3f}, {old_pos[1]:.3f})")
+            logger.info(f"  New position: ({x:.3f}, {y:.3f})")
             
-            self.nodes[node_id]["pos"] = (scaled_x, scaled_y)
             self._redraw()
+        else:
+            logger.warning(f"Received position update for unknown node: {node_id}")
 
     def updateMasterStatus(self, master_id):
+        # logger.info(f"Updating master status: New master ID = {master_id}")
+
         for node in self.nodes.values():
             if node["status"] == "Active":
                 node["is_master"] = False
@@ -127,6 +143,11 @@ class NetworkVisualizerWidget(QWidget):
         # Draw connections between active nodes
         active_nodes = [(nid, node) for nid, node in self.nodes.items() 
                        if node["status"] == "Active"]
+        
+        # Log node positions before drawing
+        logger.debug("Active node positions:")
+        for nid, node in active_nodes:
+            logger.debug(f"Node {nid}: pos={node['pos']}")
         
         for i in range(len(active_nodes)):
             for j in range(i + 1, len(active_nodes)):
@@ -209,7 +230,24 @@ class PositionReceiverThread(QThread):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.is_running = False
-        
+        self.last_positions = {}  # Dictionary to store last known positions
+
+    def positions_different(self, node_id, x, y, z):
+        """Check if the new position is different from the last known position"""
+        if node_id not in self.last_positions:
+            return True
+            
+        last_x, last_y, last_z = self.last_positions[node_id]
+        # Compare with some tolerance to handle floating point imprecision
+        tolerance = 0.0001
+        return (abs(last_x - x) > tolerance or 
+                abs(last_y - y) > tolerance or 
+                abs(last_z - z) > tolerance)
+
+    def update_last_position(self, node_id, x, y, z):
+        """Store the last known position for a node"""
+        self.last_positions[node_id] = (x, y, z)
+
     def run(self):
         self.is_running = True
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -220,15 +258,22 @@ class PositionReceiverThread(QThread):
         while self.is_running:
             try:
                 data, addr = sock.recvfrom(1024)
-                message = json.loads(data.decode())
+                position_data = struct.unpack("ffff", data)
                 
-                if all(key in message for key in ["id", "x", "y"]):
-                    node_id = message["id"]
-                    x = float(message["x"])
-                    y = float(message["y"])
+                # Extract position data
+                node_id = int(position_data[0])
+                x, y, z = position_data[1:4]
+                
+                # Check if position has changed
+                if self.positions_different(node_id, x, y, z):
+                    logger.info(f"Position changed - Node {node_id}: X={x:.3f}, Y={y:.3f}, Z={z:.3f}")
+                    self.update_last_position(node_id, x, y, z)
                     self.position_updated.emit(node_id, x, y)
+                else:
+                    logger.debug(f"Skipping update - No position change for Node {node_id}")
+                    
             except Exception as e:
-                print(f"Error receiving position data: {e}")
+                logger.error(f"Error receiving position data: {e}")
                 
         sock.close()
         
@@ -239,7 +284,7 @@ class MonitorGUI(QMainWindow):
     def __init__(self, host='localhost', port=5567):
         super().__init__()
         self.setWindowTitle("Network Monitor")
-        self.setMinimumSize(800, 600)
+        self.setMinimumSize(800, 500)
 
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
@@ -281,7 +326,8 @@ class MonitorGUI(QMainWindow):
         self.position_thread = PositionReceiverThread()
         self.position_thread.position_updated.connect(self.network_viz.updateNodePosition)
         self.position_thread.start()
-
+        
+        
     def log_message(self, message):
         self.log_text.append(message)
 

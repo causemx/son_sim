@@ -1,9 +1,9 @@
 import socket
-import json
 import time
 import math
 import random
 import sys
+import struct
 
 class PositionSimulator:
     def __init__(self, node_ids=[1, 2, 3]):
@@ -11,11 +11,12 @@ class PositionSimulator:
         self.node_ids = node_ids
         self.node_positions = {}
         
-        # Initialize positions for each node with random positions
+        # Initialize positions for each node with random positions in 0-5 range
         for node_id in node_ids:
             self.node_positions[node_id] = {
-                'x': random.uniform(0.2, 0.8),
-                'y': random.uniform(0.2, 0.8),
+                'x': random.uniform(1.0, 4.0),  # Keep away from borders
+                'y': random.uniform(1.0, 4.0),
+                'z': random.uniform(0.0, 1.0),  # Z height
                 'angle': random.uniform(0, 2 * math.pi),
                 'speed': random.uniform(0.02, 0.05)
             }
@@ -31,30 +32,37 @@ class PositionSimulator:
                 pos['angle'] -= 2 * math.pi
                 
             # Calculate new position with some random variation
-            center_x = 0.5 + random.uniform(-0.01, 0.01)
-            center_y = 0.5 + random.uniform(-0.01, 0.01)
-            radius = 0.3 + random.uniform(-0.05, 0.05)
+            center_x = 2.5 + random.uniform(-0.05, 0.05)  # Center of the area
+            center_y = 2.5 + random.uniform(-0.05, 0.05)
+            radius = 1.5 + random.uniform(-0.25, 0.25)    # Orbit radius
             
             # Update x and y positions
             pos['x'] = center_x + radius * math.cos(pos['angle'])
             pos['y'] = center_y + radius * math.sin(pos['angle'])
             
-            # Ensure positions stay within bounds (0-1)
-            pos['x'] = max(0.1, min(0.9, pos['x']))
-            pos['y'] = max(0.1, min(0.9, pos['y']))
+            # Add small random movement to z
+            pos['z'] += random.uniform(-0.05, 0.05)
+            
+            # Ensure positions stay within bounds
+            pos['x'] = max(0.5, min(4.5, pos['x']))  # Keep away from borders
+            pos['y'] = max(0.5, min(4.5, pos['y']))
+            pos['z'] = max(0.0, min(1.5, pos['z']))
 
     def send_positions(self):
-        """Send current positions via UDP"""
+        """Send current positions via UDP using struct packing"""
         for node_id in self.node_ids:
             pos = self.node_positions[node_id]
-            message = {
-                'id': node_id,
-                'x': pos['x'],
-                'y': pos['y']
-            }
-            data = json.dumps(message).encode()
-            self.socket.sendto(data, ('localhost', 17500))
-            print(f"Sent position update for Node {node_id}: x={pos['x']:.2f}, y={pos['y']:.2f}")
+            
+            # Pack data as: node_id (float), x (float), y (float), z (float)
+            packed_data = struct.pack("ffff", 
+                float(node_id),
+                pos['x'],
+                pos['y'],
+                pos['z']
+            )
+            
+            self.socket.sendto(packed_data, ('localhost', 17500))
+            print(f"Sent position update for Node {node_id}: x={pos['x']:.3f}, y={pos['y']:.3f}, z={pos['z']:.3f}")
 
     def run(self, update_interval=0.5):
         """Run the simulation with specified update interval"""
@@ -81,7 +89,7 @@ def main():
             sys.exit(1)
     else:
         # Default to nodes 1, 2, and 3
-        node_ids = [1, 2, 3]
+        node_ids = [1, ]
 
     # Create and run simulator
     simulator = PositionSimulator(node_ids)
