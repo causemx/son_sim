@@ -13,7 +13,7 @@ logging.basicConfig(
 )
 
 class NetworkHandler:
-    def __init__(self, handler_host='localhost', handler_port=5566, gui_host='localhost', gui_port=5567):
+    def __init__(self, handler_host='0.0.0.0', handler_port=5566, gui_host='remote_gui_ip', gui_port=5567):
         self.handler_host = handler_host
         self.handler_port = handler_port
         self.gui_host = gui_host

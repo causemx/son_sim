@@ -198,7 +198,7 @@ class NetworkMonitorThread(QThread):
     node_added = pyqtSignal(int, str)
     master_changed = pyqtSignal(int)
 
-    def __init__(self, host='localhost', port=5567, parent=None):
+    def __init__(self, host='0.0.0.0', port=5567, parent=None):
         super().__init__(parent)
         self.host = host
         self.port = port
