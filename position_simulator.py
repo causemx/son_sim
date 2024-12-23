@@ -89,7 +89,7 @@ def main():
             sys.exit(1)
     else:
         # Default to nodes 1, 2, and 3
-        node_ids = [1, ]
+        node_ids = [1, 2]
 
     # Create and run simulator
     simulator = PositionSimulator(node_ids)

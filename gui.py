@@ -31,6 +31,7 @@ class NetworkVisualizerWidget(QWidget):
         self.center_x = 2.5
         self.center_y = 2.5
         self.radius = 1.5
+        self.last_positions = {}  # Store last known positions for each node
         
         # Create the figure and canvas
         self.figure = Figure(figsize=(6, 4))
@@ -51,6 +52,7 @@ class NetworkVisualizerWidget(QWidget):
         
         self._create_legend()
 
+
     def _create_legend(self):
         master_patch = mpatches.Patch(color='r', label='Master Node')
         active_patch = mpatches.Patch(color='g', label='Active Node')
@@ -64,12 +66,17 @@ class NetworkVisualizerWidget(QWidget):
         if node_type == "MONITOR":
             return
             
-        num_nodes = len([n for n in self.nodes.values() if n["type"] != "MONITOR"])
-        angle = (num_nodes * 2 * math.pi) / 3
-        x = self.center_x + self.radius * math.cos(angle)
-        y = self.center_y + self.radius * math.sin(angle)
-        pos = (x, y)
+        # Check if we have a last known position for this node
+        if node_id in self.last_positions:
+            x, y = self.last_positions[node_id]
+        else:
+            # Calculate default position using circular layout
+            num_nodes = len([n for n in self.nodes.values() if n["type"] != "MONITOR"])
+            angle = (num_nodes * 2 * math.pi) / 3
+            x = self.center_x + self.radius * math.cos(angle)
+            y = self.center_y + self.radius * math.sin(angle)
 
+        pos = (x, y)
         self.nodes[node_id] = {
             "pos": pos,
             "type": node_type,
@@ -80,24 +87,26 @@ class NetworkVisualizerWidget(QWidget):
             "last_seen": time.time()
         }
 
-        logger.info(f"Added new node: ID={node_id}, Type={node_type}, Port={port}")
+        logger.info(f"Added new node: ID={node_id}, Type={node_type}, Port={port}, Position=({x:.3f}, {y:.3f})")
         self._redraw()
 
 
     def updateNodePosition(self, node_id, x, y):
         """Update node position based on received coordinates"""
+        # Store the position for future reference
+        self.last_positions[node_id] = (x, y)
+        
         if node_id in self.nodes:
-            # Store the coordinates as received, no additional scaling
             old_pos = self.nodes[node_id]["pos"]
             self.nodes[node_id]["pos"] = (x, y)
             
-            logger.info(f"Node {node_id} visualization position updated:")
-            logger.info(f"  Old position: ({old_pos[0]:.3f}, {old_pos[1]:.3f})")
-            logger.info(f"  New position: ({x:.3f}, {y:.3f})")
+            logger.debug(f"Node {node_id} visualization position updated:")
+            logger.debug(f"  Old position: ({old_pos[0]:.3f}, {old_pos[1]:.3f})")
+            logger.debug(f"  New position: ({x:.3f}, {y:.3f})")
             
             self._redraw()
         else:
-            logger.warning(f"Received position update for unknown node: {node_id}")
+            logger.info(f"Storing position for future node: {node_id} at ({x:.3f}, {y:.3f})")
 
     def updateMasterStatus(self, master_id):
         # logger.info(f"Updating master status: New master ID = {master_id}")
@@ -259,7 +268,7 @@ class PositionReceiverThread(QThread):
             try:
                 data, addr = sock.recvfrom(1024)
                 position_data = struct.unpack("ffff", data)
-                
+
                 # Extract position data
                 node_id = int(position_data[0])
                 x, y, z = position_data[1:4]
