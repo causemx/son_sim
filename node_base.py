@@ -6,59 +6,46 @@ from enum import Enum
 
 class NodeType(Enum):
     MONITOR = "MONITOR"
-    NODE = "NODE"  # Combined type for all non-monitor nodes
+    NODE = "NODE"
 
 class Node:
-    def __init__(self, port, node_type, host='localhost'):
+    def __init__(self, ip_address, port, node_type):
+        self.ip_address = ip_address
         self.port = port
-        self.node_id = port % 1000  # Convert port to node_id (e.g., 5001 -> 1)
+        # Extract last byte of IP address as node_id
+        self.node_id = int(ip_address.split('.')[-1])
         self.node_type = node_type
-        self.host = host
-        self.nodes = {}  # {node_id: (host, port, is_master)}
+        self.nodes = {}  # {node_id: (ip_address, port, node_type)}
         self.master_id = None
         self.is_running = False
         self.election_in_progress = False
         self.last_heartbeat = {}
         self.socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        self.socket.bind((host, self.port))
+        self.socket.bind((ip_address, self.port))
         self.is_master = False
         
-        # If this is the highest port number (except monitor), it becomes master
-        if node_type == NodeType.NODE:
-            self.is_master = True  # Initially assume master
-            
     def start(self):
         self.is_running = True
         threading.Thread(target=self._handle_messages, daemon=True).start()
         
         if self.node_type == NodeType.NODE:
-            # Start heartbeat monitoring
             threading.Thread(target=self._monitor_heartbeat, daemon=True).start()
-            # If master, start sending heartbeats
-            if self.is_master:
-                self.master_id = self.node_id
-                threading.Thread(target=self._send_heartbeat, daemon=True).start()
-                print(f"Node {self.node_id} starting as master")
+            # Initial election when node starts
+            self._start_election()
 
-    def register_node(self, port, host, node_type):
-        node_id = port % 1000
-        self.nodes[node_id] = (host, port, node_type)
-        
-        # If we're a NODE and find a higher-numbered node, we're not master
-        if self.node_type == NodeType.NODE and self.is_master:
-            if node_id > self.node_id and node_type == NodeType.NODE:
-                self.is_master = False
-                print(f"Node {self.node_id} detected higher node {node_id}, not becoming master")
+    def register_node(self, ip_address, port, node_type):
+        node_id = int(ip_address.split('.')[-1])
+        self.nodes[node_id] = (ip_address, port, node_type)
 
     def _send_message(self, to_node_id, message_type, data=None):
         if to_node_id in self.nodes:
-            host, port, _ = self.nodes[to_node_id]
+            ip_address, port, _ = self.nodes[to_node_id]
             message = {
                 'type': message_type,
                 'from': self.node_id,
                 'data': data or {}
             }
-            self.socket.sendto(json.dumps(message).encode(), (host, port))
+            self.socket.sendto(json.dumps(message).encode(), (ip_address, port))
 
     def _broadcast_message(self, message_type, data=None):
         for node_id in self.nodes:
@@ -85,6 +72,7 @@ class Node:
         elif msg_type == 'ELECTION':
             if not self.election_in_progress:
                 self.election_in_progress = True
+                # Compare node_ids (last byte of IP)
                 if self.node_id > from_node:
                     self._send_message(from_node, 'ELECTION_RESPONSE')
                     self._start_election()
@@ -96,6 +84,8 @@ class Node:
             new_master_id = data['master_id']
             self.master_id = new_master_id
             self.is_master = (self.node_id == new_master_id)
+            if self.is_master:
+                threading.Thread(target=self._send_heartbeat, daemon=True).start()
             self.election_in_progress = False
 
     def _send_heartbeat(self):
@@ -119,7 +109,7 @@ class Node:
             self._broadcast_message('ELECTION')
             time.sleep(2)
             
-            if self.election_in_progress:  # No higher ID responded
+            if self.election_in_progress:  # No higher IP responded
                 self.is_master = True
                 self.master_id = self.node_id
                 print(f"Node {self.node_id} becoming new master")
