@@ -56,10 +56,9 @@ class NetworkVisualizerWidget(QWidget):
     def _create_legend(self):
         master_patch = mpatches.Patch(color='r', label='Master Node')
         active_patch = mpatches.Patch(color='g', label='Active Node')
-        inactive_patch = mpatches.Patch(color='gray', label='Inactive Node')
         
-        self.ax.legend(handles=[master_patch, active_patch, inactive_patch],
-                      loc='upper right', bbox_to_anchor=(1.1, 1.1))
+        self.ax.legend(handles=[master_patch, active_patch],
+                    loc='upper right', bbox_to_anchor=(1.1, 1.1))
 
     def addNode(self, port, node_type):
         node_id = port % 1000
@@ -123,20 +122,13 @@ class NetworkVisualizerWidget(QWidget):
 
     def updateNodeStatus(self, node_id, status):
         if node_id in self.nodes:
-            old_status = self.nodes[node_id]["status"]
-            self.nodes[node_id]["status"] = status
-            
-            if status == "Active":
-                if self.nodes[node_id]["is_master"]:
-                    self.nodes[node_id]["color"] = 'r'
-                else:
-                    self.nodes[node_id]["color"] = 'g'
-                self.nodes[node_id]["last_seen"] = time.time()
+            if self.nodes[node_id]["is_master"]:
+                self.nodes[node_id]["color"] = 'r'
             else:
-                self.nodes[node_id]["color"] = 'gray'
-                self.nodes[node_id]["is_master"] = False
+                self.nodes[node_id]["color"] = 'g'
+            self.nodes[node_id]["last_seen"] = time.time()
             
-            if old_status == "Active" and status != "Active" and self.nodes[node_id]["is_master"]:
+            if self.nodes[node_id]["is_master"]:
                 self.updateMasterStatus(None)
             
             self._redraw()
@@ -149,48 +141,37 @@ class NetworkVisualizerWidget(QWidget):
         self.ax.axis('on')
         self.ax.grid(True)
 
-        # Draw connections between active nodes
-        active_nodes = [(nid, node) for nid, node in self.nodes.items() 
-                       if node["status"] == "Active"]
+        # Draw connections between nodes
+        nodes = list(self.nodes.items())
         
-        # Log node positions before drawing
-        logger.debug("Active node positions:")
-        for nid, node in active_nodes:
-            logger.debug(f"Node {nid}: pos={node['pos']}")
-        
-        for i in range(len(active_nodes)):
-            for j in range(i + 1, len(active_nodes)):
-                node1 = active_nodes[i][1]
-                node2 = active_nodes[j][1]
+        for i in range(len(nodes)):
+            for j in range(i + 1, len(nodes)):
+                node1 = nodes[i][1]
+                node2 = nodes[j][1]
                 self.ax.plot([node1["pos"][0], node2["pos"][0]], 
-                           [node1["pos"][1], node2["pos"][1]], 
-                           color='lightgray', zorder=1)
+                        [node1["pos"][1], node2["pos"][1]], 
+                        color='lightgray', zorder=1)
 
         # Draw nodes
         for node_id, node in self.nodes.items():
-            if node["status"] != "Active":
-                node_color = 'gray'
-            else:
-                node_color = 'r' if node["is_master"] else 'g'
+            node_color = 'r' if node["is_master"] else 'g'
             
             circle = plt.Circle(node["pos"], 0.2, color=node_color, 
-                              ec='black', zorder=2)
+                            ec='black', zorder=2)
             self.ax.add_artist(circle)
             
             status_text = "Master" if node["is_master"] else "Node"
-            if node["status"] != "Active":
-                status_text = "Inactive"
                 
             self.ax.annotate(f'Port {node["port"]}\n({status_text})',
-                           xy=node["pos"], xytext=(0, 0),
-                           textcoords='offset points',
-                           ha='center', va='center',
-                           color='black', zorder=3)
+                        xy=node["pos"], xytext=(0, 0),
+                        textcoords='offset points',
+                        ha='center', va='center',
+                        color='black', zorder=3)
 
         self.ax.set_xlabel('X-axis')
         self.ax.set_ylabel('Y-axis')
         self._create_legend()
-        self.figure.canvas.draw()
+        self.figure.canvas.draw() 
 
 class NetworkMonitorThread(QThread):
     message_received = pyqtSignal(str)

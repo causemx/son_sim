@@ -87,31 +87,7 @@ class NetworkHandler:
     def monitor_nodes(self):
         while self.is_running:
             time.sleep(1)
-            current_time = time.time()
-            for node_id in self.known_nodes:
-                if node_id != 0:  # Skip monitor node
-                    if node_id in self.monitor_node.last_heartbeat:
-                        last_seen = self.monitor_node.last_heartbeat[node_id]
-                        time_diff = current_time - last_seen
-                        if time_diff > 3:
-                            logging.warning(f"Node {node_id} became inactive (no heartbeat for {time_diff:.1f}s)")
-                            self.send_to_gui('NODE_STATUS', {
-                                'node_id': node_id,
-                                'status': "Inactive"
-                            })
-                            self.send_to_gui('LOG', {
-                                'message': f"Node {node_id} became inactive"
-                            })
-                        elif self.monitor_node.nodes.get(node_id, {}).get("status") == "Inactive":
-                            logging.info(f"Node {node_id} became active again")
-                            self.send_to_gui('NODE_STATUS', {
-                                'node_id': node_id,
-                                'status': "Active"
-                            })
-                            self.send_to_gui('LOG', {
-                                'message': f"Node {node_id} became active"
-                            })
-
+            
     def start(self):
         # Initialize and start monitor node
         self.monitor_node = Node(5000, NodeType.MONITOR)
