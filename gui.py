@@ -13,7 +13,6 @@ import math
 import struct
 import logging
 
-
 # Configure logging to only show console output
 logging.basicConfig(
     level=logging.INFO,
@@ -52,7 +51,6 @@ class NetworkVisualizerWidget(QWidget):
         
         self._create_legend()
 
-
     def _create_legend(self):
         master_patch = mpatches.Patch(color='r', label='Master Node')
         active_patch = mpatches.Patch(color='g', label='Active Node')
@@ -63,6 +61,10 @@ class NetworkVisualizerWidget(QWidget):
     def addNode(self, port, node_type):
         node_id = port % 1000
         if node_type == "MONITOR":
+            return
+            
+        # Check if node already exists
+        if node_id in self.nodes:
             return
             
         # Check if we have a last known position for this node
@@ -89,6 +91,12 @@ class NetworkVisualizerWidget(QWidget):
         logger.info(f"Added new node: ID={node_id}, Type={node_type}, Port={port}, Position=({x:.3f}, {y:.3f})")
         self._redraw()
 
+    def removeNode(self, node_id):
+        if node_id in self.nodes:
+            # Store the position before removing
+            self.last_positions[node_id] = self.nodes[node_id]["pos"]
+            del self.nodes[node_id]
+            self._redraw()
 
     def updateNodePosition(self, node_id, x, y):
         """Update node position based on received coordinates"""
@@ -108,8 +116,6 @@ class NetworkVisualizerWidget(QWidget):
             logger.info(f"Storing position for future node: {node_id} at ({x:.3f}, {y:.3f})")
 
     def updateMasterStatus(self, master_id):
-        # logger.info(f"Updating master status: New master ID = {master_id}")
-
         for node in self.nodes.values():
             if node["status"] == "Active":
                 node["is_master"] = False
@@ -171,13 +177,14 @@ class NetworkVisualizerWidget(QWidget):
         self.ax.set_xlabel('X-axis')
         self.ax.set_ylabel('Y-axis')
         self._create_legend()
-        self.figure.canvas.draw() 
+        self.figure.canvas.draw()
 
 class NetworkMonitorThread(QThread):
     message_received = pyqtSignal(str)
     node_status_changed = pyqtSignal(int, str)
     node_added = pyqtSignal(int, str)
     master_changed = pyqtSignal(int)
+    node_removed = pyqtSignal(int)
 
     def __init__(self, host='localhost', port=5567, parent=None):
         super().__init__(parent)
@@ -186,6 +193,9 @@ class NetworkMonitorThread(QThread):
         self.is_running = False
         self.socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.socket.bind((host, port))
+        
+        # Send initial connection message in a retry loop
+        self.send_connection_message()
 
     def run(self):
         self.is_running = True
@@ -195,20 +205,48 @@ class NetworkMonitorThread(QThread):
                 message = json.loads(data.decode())
                 self.process_message(message)
             except Exception as e:
-                print(f"Error receiving message: {e}")
+                logger.error(f"Error receiving message: {e}")
 
+    def send_connection_message(self):
+        """Send connection message to handler with retries"""
+        max_retries = 3
+        retry_delay = 1.0  # seconds
+        
+        for attempt in range(max_retries):
+            try:
+                message = {
+                    'type': 'GUI_CONNECTED'
+                }
+                self.socket.sendto(
+                    json.dumps(message).encode(),
+                    ('localhost', 5566)
+                )
+                logger.info(f"Sent connection message to handler (attempt {attempt + 1})")
+                time.sleep(retry_delay)  # Give time for handler to process
+                return
+            except Exception as e:
+                logger.error(f"Failed to send connection message (attempt {attempt + 1}): {e}")
+                if attempt < max_retries - 1:
+                    time.sleep(retry_delay)
+    
     def process_message(self, message):
         msg_type = message['type']
-        data = message['data']
+        data = message.get('data', {})
+
+        # Log received message for debugging
+        logger.debug(f"Received message: type={msg_type}, data={data}")
 
         if msg_type == 'LOG':
             self.message_received.emit(data['message'])
         elif msg_type == 'NODE_ADDED':
+            logger.info(f"Adding node: port={data['port']}, type={data['node_type']}")
             self.node_added.emit(data['port'], data['node_type'])
         elif msg_type == 'NODE_STATUS':
             self.node_status_changed.emit(data['node_id'], data['status'])
         elif msg_type == 'MASTER_CHANGED':
             self.master_changed.emit(data['master_id'])
+        elif msg_type == "NODE_REMOVED":
+            self.node_removed.emit(data['node_id'])
 
     def stop(self):
         self.is_running = False
@@ -310,13 +348,13 @@ class MonitorGUI(QMainWindow):
         self.monitor_thread.node_status_changed.connect(self.network_viz.updateNodeStatus)
         self.monitor_thread.node_added.connect(self.network_viz.addNode)
         self.monitor_thread.master_changed.connect(self.network_viz.updateMasterStatus)
+        self.monitor_thread.node_removed.connect(self.network_viz.removeNode)
         self.monitor_thread.start()
 
         # Start position receiver thread
         self.position_thread = PositionReceiverThread()
         self.position_thread.position_updated.connect(self.network_viz.updateNodePosition)
         self.position_thread.start()
-        
         
     def log_message(self, message):
         self.log_text.append(message)

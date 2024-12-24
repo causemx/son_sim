@@ -127,5 +127,7 @@ class Node:
                 threading.Thread(target=self._send_heartbeat, daemon=True).start()
 
     def stop(self):
+        if self.node_type == NodeType.NODE:
+            self._broadcast_message('NODE_SHUTDOWN')
         self.is_running = False
         self.socket.close()
