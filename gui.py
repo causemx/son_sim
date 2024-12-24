@@ -1,5 +1,11 @@
-from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
-                           QHBoxLayout, QLabel, QTextEdit)
+from PyQt5.QtWidgets import (
+    QApplication, 
+    QMainWindow, 
+    QWidget, 
+    QVBoxLayout, 
+    QHBoxLayout, 
+    QLabel, 
+    QTextEdit)
 from PyQt5.QtCore import pyqtSignal, QThread
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
@@ -24,7 +30,7 @@ logger = logging.getLogger(__name__)
 class NetworkVisualizerWidget(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setMinimumSize(400, 300)
+        self.setMinimumSize(600, 300)
         self.nodes = {}
         self.last_heartbeat = {}
         self.center_x = 2.5
@@ -43,11 +49,16 @@ class NetworkVisualizerWidget(QWidget):
         self.setLayout(layout)
         
         # Configure plot
-        self.ax.set_xlim(0, 5)
-        self.ax.set_ylim(0, 5)
+        self.ax.set_xlim(0, 6)
+        self.ax.set_ylim(0, 6)
         self.ax.set_aspect('equal')
         self.ax.axis('on')
         self.ax.grid(True)
+        
+        # Set ticks every 0.5m
+        self.ax.set_xticks([i/2 for i in range(13)])
+        self.ax.set_yticks([i/2 for i in range(13)])
+        self.ax.tick_params(axis='both', which='major', labelsize=8)
         
         self._create_legend()
 
@@ -141,11 +152,18 @@ class NetworkVisualizerWidget(QWidget):
 
     def _redraw(self):
         self.ax.clear()
-        self.ax.set_xlim(0, 5)
-        self.ax.set_ylim(0, 5)
+        # Configure plot
+        self.ax.set_xlim(0, 6)
+        self.ax.set_ylim(0, 6)
         self.ax.set_aspect('equal')
         self.ax.axis('on')
         self.ax.grid(True)
+        
+        # Set ticks every 0.5m
+        self.ax.set_xticks([i/2 for i in range(13)])
+        self.ax.set_yticks([i/2 for i in range(13)])
+        self.ax.tick_params(axis='both', which='major', labelsize=8)
+
 
         # Draw connections between nodes
         nodes = list(self.nodes.items())
@@ -168,14 +186,14 @@ class NetworkVisualizerWidget(QWidget):
             
             status_text = "Master" if node["is_master"] else "Node"
                 
-            self.ax.annotate(f'Port {node["port"]}\n({status_text})',
+            self.ax.annotate(f'Node {node_id}\n({status_text})',
                         xy=node["pos"], xytext=(0, 0),
                         textcoords='offset points',
                         ha='center', va='center',
                         color='black', zorder=3)
 
-        self.ax.set_xlabel('X-axis')
-        self.ax.set_ylabel('Y-axis')
+        self.ax.set_xlabel('x-axis(meter)')
+        self.ax.set_ylabel('x-axis(meter)')
         self._create_legend()
         self.figure.canvas.draw()
 
@@ -312,11 +330,14 @@ class MonitorGUI(QMainWindow):
     def __init__(self, host='localhost', port=5567):
         super().__init__()
         self.setWindowTitle("Network Monitor")
-        self.setMinimumSize(800, 500)
+        
+        screen = QApplication.primaryScreen().geometry()
+        self.setGeometry(screen)
 
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
         layout = QHBoxLayout(central_widget)
+        layout.setContentsMargins(10, 10, 10, 10)
 
         # Create left panel for event log
         left_panel = QWidget()
@@ -327,20 +348,26 @@ class MonitorGUI(QMainWindow):
         log_label = QLabel("Event Log")
         log_label.setStyleSheet("""
             font-weight: bold;
-            font-size: 14px;
+            font-size: 16px;
             padding: 5px;
             background-color: #fcba03;
             border-radius: 5px;
         """)
         self.log_text = QTextEdit()
+        self.log_text.setStyleSheet("""
+            font-size: 16px;
+            padding: 5px;
+        """)
         self.log_text.setReadOnly(True)
-        self.log_text.setMinimumWidth(250)
+        self.log_text.setMinimumWidth(150)
         left_layout.addWidget(log_label)
         left_layout.addWidget(self.log_text)
 
         # Create network visualizer
         self.network_viz = NetworkVisualizerWidget()
         layout.addWidget(self.network_viz)
+        layout.setStretch(0, 1)  # Left panel takes 1 part
+        layout.setStretch(1, 3)  # Network visualizer takes 3 parts
 
         # Start monitor thread
         self.monitor_thread = NetworkMonitorThread(host, port)
