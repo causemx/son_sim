@@ -149,7 +149,7 @@ class NetworkHandler:
             
     def start(self):
         # Initialize and start monitor node
-        self.monitor_node = Node(5000, NodeType.MONITOR)
+        self.monitor_node = Node('192.168.0.0', 5000, NodeType.MONITOR)
         # Override the process_message method to add logging
         original_process = self.monitor_node._process_message
         def logged_process(message):
