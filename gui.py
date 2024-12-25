@@ -1,5 +1,11 @@
-from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
-                           QHBoxLayout, QLabel, QTextEdit)
+from PyQt5.QtWidgets import (
+    QApplication, 
+    QMainWindow, 
+    QWidget, 
+    QVBoxLayout, 
+    QHBoxLayout, 
+    QLabel, 
+    QTextEdit)
 from PyQt5.QtCore import pyqtSignal, QThread
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
@@ -13,7 +19,6 @@ import math
 import struct
 import logging
 
-
 # Configure logging to only show console output
 logging.basicConfig(
     level=logging.INFO,
@@ -25,7 +30,7 @@ logger = logging.getLogger(__name__)
 class NetworkVisualizerWidget(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setMinimumSize(400, 300)
+        self.setMinimumSize(600, 300)
         self.nodes = {}
         self.last_heartbeat = {}
         self.center_x = 2.5
@@ -44,26 +49,33 @@ class NetworkVisualizerWidget(QWidget):
         self.setLayout(layout)
         
         # Configure plot
-        self.ax.set_xlim(0, 5)
-        self.ax.set_ylim(0, 5)
+        self.ax.set_xlim(0, 6)
+        self.ax.set_ylim(0, 6)
         self.ax.set_aspect('equal')
         self.ax.axis('on')
         self.ax.grid(True)
         
+        # Set ticks every 0.5m
+        self.ax.set_xticks([i/2 for i in range(13)])
+        self.ax.set_yticks([i/2 for i in range(13)])
+        self.ax.tick_params(axis='both', which='major', labelsize=8)
+        
         self._create_legend()
-
 
     def _create_legend(self):
         master_patch = mpatches.Patch(color='r', label='Master Node')
         active_patch = mpatches.Patch(color='g', label='Active Node')
-        inactive_patch = mpatches.Patch(color='gray', label='Inactive Node')
         
-        self.ax.legend(handles=[master_patch, active_patch, inactive_patch],
-                      loc='upper right', bbox_to_anchor=(1.1, 1.1))
+        self.ax.legend(handles=[master_patch, active_patch],
+                    loc='upper right', bbox_to_anchor=(1.1, 1.1))
 
     def addNode(self, port, node_type):
         node_id = port % 1000
         if node_type == "MONITOR":
+            return
+            
+        # Check if node already exists
+        if node_id in self.nodes:
             return
             
         # Check if we have a last known position for this node
@@ -90,6 +102,12 @@ class NetworkVisualizerWidget(QWidget):
         logger.info(f"Added new node: ID={node_id}, Type={node_type}, Port={port}, Position=({x:.3f}, {y:.3f})")
         self._redraw()
 
+    def removeNode(self, node_id):
+        if node_id in self.nodes:
+            # Store the position before removing
+            self.last_positions[node_id] = self.nodes[node_id]["pos"]
+            del self.nodes[node_id]
+            self._redraw()
 
     def updateNodePosition(self, node_id, x, y):
         """Update node position based on received coordinates"""
@@ -109,8 +127,6 @@ class NetworkVisualizerWidget(QWidget):
             logger.info(f"Storing position for future node: {node_id} at ({x:.3f}, {y:.3f})")
 
     def updateMasterStatus(self, master_id):
-        # logger.info(f"Updating master status: New master ID = {master_id}")
-
         for node in self.nodes.values():
             if node["status"] == "Active":
                 node["is_master"] = False
@@ -123,72 +139,61 @@ class NetworkVisualizerWidget(QWidget):
 
     def updateNodeStatus(self, node_id, status):
         if node_id in self.nodes:
-            old_status = self.nodes[node_id]["status"]
-            self.nodes[node_id]["status"] = status
-            
-            if status == "Active":
-                if self.nodes[node_id]["is_master"]:
-                    self.nodes[node_id]["color"] = 'r'
-                else:
-                    self.nodes[node_id]["color"] = 'g'
-                self.nodes[node_id]["last_seen"] = time.time()
+            if self.nodes[node_id]["is_master"]:
+                self.nodes[node_id]["color"] = 'r'
             else:
-                self.nodes[node_id]["color"] = 'gray'
-                self.nodes[node_id]["is_master"] = False
+                self.nodes[node_id]["color"] = 'g'
+            self.nodes[node_id]["last_seen"] = time.time()
             
-            if old_status == "Active" and status != "Active" and self.nodes[node_id]["is_master"]:
+            if self.nodes[node_id]["is_master"]:
                 self.updateMasterStatus(None)
             
             self._redraw()
 
     def _redraw(self):
         self.ax.clear()
-        self.ax.set_xlim(0, 5)
-        self.ax.set_ylim(0, 5)
+        # Configure plot
+        self.ax.set_xlim(0, 6)
+        self.ax.set_ylim(0, 6)
         self.ax.set_aspect('equal')
         self.ax.axis('on')
         self.ax.grid(True)
+        
+        # Set ticks every 0.5m
+        self.ax.set_xticks([i/2 for i in range(13)])
+        self.ax.set_yticks([i/2 for i in range(13)])
+        self.ax.tick_params(axis='both', which='major', labelsize=8)
 
-        # Draw connections between active nodes
-        active_nodes = [(nid, node) for nid, node in self.nodes.items() 
-                       if node["status"] == "Active"]
+
+        # Draw connections between nodes
+        nodes = list(self.nodes.items())
         
-        # Log node positions before drawing
-        logger.debug("Active node positions:")
-        for nid, node in active_nodes:
-            logger.debug(f"Node {nid}: pos={node['pos']}")
-        
-        for i in range(len(active_nodes)):
-            for j in range(i + 1, len(active_nodes)):
-                node1 = active_nodes[i][1]
-                node2 = active_nodes[j][1]
+        for i in range(len(nodes)):
+            for j in range(i + 1, len(nodes)):
+                node1 = nodes[i][1]
+                node2 = nodes[j][1]
                 self.ax.plot([node1["pos"][0], node2["pos"][0]], 
-                           [node1["pos"][1], node2["pos"][1]], 
-                           color='lightgray', zorder=1)
+                        [node1["pos"][1], node2["pos"][1]], 
+                        color='lightgray', zorder=1)
 
         # Draw nodes
         for node_id, node in self.nodes.items():
-            if node["status"] != "Active":
-                node_color = 'gray'
-            else:
-                node_color = 'r' if node["is_master"] else 'g'
+            node_color = 'r' if node["is_master"] else 'g'
             
             circle = plt.Circle(node["pos"], 0.2, color=node_color, 
-                              ec='black', zorder=2)
+                            ec='black', zorder=2)
             self.ax.add_artist(circle)
             
             status_text = "Master" if node["is_master"] else "Node"
-            if node["status"] != "Active":
-                status_text = "Inactive"
                 
-            self.ax.annotate(f'Port {node["port"]}\n({status_text})',
-                           xy=node["pos"], xytext=(0, 0),
-                           textcoords='offset points',
-                           ha='center', va='center',
-                           color='black', zorder=3)
+            self.ax.annotate(f'Node {node_id}\n({status_text})',
+                        xy=node["pos"], xytext=(0, 0),
+                        textcoords='offset points',
+                        ha='center', va='center',
+                        color='black', zorder=3)
 
-        self.ax.set_xlabel('X-axis')
-        self.ax.set_ylabel('Y-axis')
+        self.ax.set_xlabel('x-axis(meter)')
+        self.ax.set_ylabel('x-axis(meter)')
         self._create_legend()
         self.figure.canvas.draw()
 
@@ -197,6 +202,7 @@ class NetworkMonitorThread(QThread):
     node_status_changed = pyqtSignal(int, str)
     node_added = pyqtSignal(int, str)
     master_changed = pyqtSignal(int)
+    node_removed = pyqtSignal(int)
 
     def __init__(self, host='0.0.0.0', port=5567, parent=None):
         super().__init__(parent)
@@ -205,6 +211,9 @@ class NetworkMonitorThread(QThread):
         self.is_running = False
         self.socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.socket.bind((host, port))
+        
+        # Send initial connection message in a retry loop
+        self.send_connection_message()
 
     def run(self):
         self.is_running = True
@@ -214,20 +223,48 @@ class NetworkMonitorThread(QThread):
                 message = json.loads(data.decode())
                 self.process_message(message)
             except Exception as e:
-                print(f"Error receiving message: {e}")
+                logger.error(f"Error receiving message: {e}")
 
+    def send_connection_message(self):
+        """Send connection message to handler with retries"""
+        max_retries = 3
+        retry_delay = 1.0  # seconds
+        
+        for attempt in range(max_retries):
+            try:
+                message = {
+                    'type': 'GUI_CONNECTED'
+                }
+                self.socket.sendto(
+                    json.dumps(message).encode(),
+                    ('localhost', 5566)
+                )
+                logger.info(f"Sent connection message to handler (attempt {attempt + 1})")
+                time.sleep(retry_delay)  # Give time for handler to process
+                return
+            except Exception as e:
+                logger.error(f"Failed to send connection message (attempt {attempt + 1}): {e}")
+                if attempt < max_retries - 1:
+                    time.sleep(retry_delay)
+    
     def process_message(self, message):
         msg_type = message['type']
-        data = message['data']
+        data = message.get('data', {})
+
+        # Log received message for debugging
+        logger.debug(f"Received message: type={msg_type}, data={data}")
 
         if msg_type == 'LOG':
             self.message_received.emit(data['message'])
         elif msg_type == 'NODE_ADDED':
+            logger.info(f"Adding node: port={data['port']}, type={data['node_type']}")
             self.node_added.emit(data['port'], data['node_type'])
         elif msg_type == 'NODE_STATUS':
             self.node_status_changed.emit(data['node_id'], data['status'])
         elif msg_type == 'MASTER_CHANGED':
             self.master_changed.emit(data['master_id'])
+        elif msg_type == "NODE_REMOVED":
+            self.node_removed.emit(data['node_id'])
 
     def stop(self):
         self.is_running = False
@@ -293,11 +330,14 @@ class MonitorGUI(QMainWindow):
     def __init__(self, host='localhost', port=5567):
         super().__init__()
         self.setWindowTitle("Network Monitor")
-        self.setMinimumSize(800, 500)
+        
+        screen = QApplication.primaryScreen().geometry()
+        self.setGeometry(screen)
 
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
         layout = QHBoxLayout(central_widget)
+        layout.setContentsMargins(10, 10, 10, 10)
 
         # Create left panel for event log
         left_panel = QWidget()
@@ -308,20 +348,26 @@ class MonitorGUI(QMainWindow):
         log_label = QLabel("Event Log")
         log_label.setStyleSheet("""
             font-weight: bold;
-            font-size: 14px;
+            font-size: 16px;
             padding: 5px;
             background-color: #fcba03;
             border-radius: 5px;
         """)
         self.log_text = QTextEdit()
+        self.log_text.setStyleSheet("""
+            font-size: 16px;
+            padding: 5px;
+        """)
         self.log_text.setReadOnly(True)
-        self.log_text.setMinimumWidth(250)
+        self.log_text.setMinimumWidth(150)
         left_layout.addWidget(log_label)
         left_layout.addWidget(self.log_text)
 
         # Create network visualizer
         self.network_viz = NetworkVisualizerWidget()
         layout.addWidget(self.network_viz)
+        layout.setStretch(0, 1)  # Left panel takes 1 part
+        layout.setStretch(1, 3)  # Network visualizer takes 3 parts
 
         # Start monitor thread
         self.monitor_thread = NetworkMonitorThread(host, port)
@@ -329,13 +375,13 @@ class MonitorGUI(QMainWindow):
         self.monitor_thread.node_status_changed.connect(self.network_viz.updateNodeStatus)
         self.monitor_thread.node_added.connect(self.network_viz.addNode)
         self.monitor_thread.master_changed.connect(self.network_viz.updateMasterStatus)
+        self.monitor_thread.node_removed.connect(self.network_viz.removeNode)
         self.monitor_thread.start()
 
         # Start position receiver thread
         self.position_thread = PositionReceiverThread()
         self.position_thread.position_updated.connect(self.network_viz.updateNodePosition)
         self.position_thread.start()
-        
         
     def log_message(self, message):
         self.log_text.append(message)

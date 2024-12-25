@@ -21,10 +21,13 @@ class NetworkHandler:
         self.monitor_node = None
         self.is_running = False
         self.known_nodes = set()
+        self.master_id = None
         
         # Setup UDP socket for GUI communication
         self.gui_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.gui_socket.bind((handler_host, handler_port))
+        self.gui_socket.settimeout(0.1)  # Add timeout for non-blocking
+        
         logging.info(f"Network handler initialized on {handler_host}:{handler_port}")
         logging.info(f"Connected to GUI at {gui_host}:{gui_port}")
 
@@ -43,12 +46,38 @@ class NetworkHandler:
         except Exception as e:
             logging.error(f"Error sending to GUI: {e}")
 
+    def send_network_state(self):
+        """Send current network state to GUI"""
+        # Add short delay to ensure GUI is ready
+        time.sleep(0.5)
+        
+        # Send monitor node
+        self.send_to_gui('NODE_ADDED', {
+            'port': 5000,
+            'node_type': "MONITOR"
+        })
+        
+        # Send all known nodes
+        for node_id in self.known_nodes:
+            if node_id != 0:  # Skip monitor node
+                self.send_to_gui('NODE_ADDED', {
+                    'port': 5000 + node_id,
+                    'node_type': 'NODE'
+                })
+        
+        # Send current master if exists
+        if self.master_id is not None:
+            self.send_to_gui('MASTER_CHANGED', {
+                'master_id': self.master_id
+            })
+            
+        logging.info(f"Sent network state: nodes={self.known_nodes}, master={self.master_id}")
+
     def process_node_message(self, message):
         msg_type = message['type']
         from_node = message['from']
         data = message.get('data', {})
         
-        # Log incoming message
         logging.info(f"IN  <- Node {from_node} [{msg_type}]: {json.dumps(data, indent=2)}")
         
         if from_node not in self.known_nodes:
@@ -62,56 +91,62 @@ class NetworkHandler:
                 'message': f"Node {from_node} (Port {5000 + from_node}) joined network"
             })
         
-        if msg_type == 'HEARTBEAT':
-            logging.debug(f"Heartbeat received from Node {from_node}")
+        if msg_type == 'NODE_SHUTDOWN':
+            logging.info(f"Node {from_node} is shutting down")
+            if from_node in self.known_nodes:
+                self.known_nodes.remove(from_node)
+                self.send_to_gui('NODE_REMOVED', {
+                    'node_id': from_node
+                })
+                self.send_to_gui('LOG', {
+                    'message': f"Node {from_node} has left the network"
+                })
+        
+        elif msg_type == 'HEARTBEAT':
+            self.master_id = from_node
             self.send_to_gui('MASTER_CHANGED', {
                 'master_id': from_node
             })
+            
         elif msg_type == 'ELECTION':
             logging.info(f"Election process started by Node {from_node}")
             self.send_to_gui('LOG', {
                 'message': "Election process started"
             })
+            
         elif msg_type == 'NEW_MASTER':
-            new_master = message['data']['master_id']
-            logging.info(f"Node {new_master} elected as new master")
+            self.master_id = data['master_id']
+            logging.info(f"Node {self.master_id} elected as new master")
             self.send_to_gui('LOG', {
-                'message': f"Node {new_master} became master"
+                'message': f"Node {self.master_id} became master"
             })
             self.send_to_gui('MASTER_CHANGED', {
-                'master_id': new_master
+                'master_id': self.master_id
             })
+            
         elif msg_type == 'ELECTION_RESPONSE':
             logging.info(f"Election response received from Node {from_node}")
+            
+        elif msg_type == 'GUI_CONNECTED':
+            logging.info("New GUI connected - sending current network state")
+            self.send_network_state()
 
     def monitor_nodes(self):
         while self.is_running:
-            time.sleep(1)
-            current_time = time.time()
-            for node_id in self.known_nodes:
-                if node_id != 0:  # Skip monitor node
-                    if node_id in self.monitor_node.last_heartbeat:
-                        last_seen = self.monitor_node.last_heartbeat[node_id]
-                        time_diff = current_time - last_seen
-                        if time_diff > 3:
-                            logging.warning(f"Node {node_id} became inactive (no heartbeat for {time_diff:.1f}s)")
-                            self.send_to_gui('NODE_STATUS', {
-                                'node_id': node_id,
-                                'status': "Inactive"
-                            })
-                            self.send_to_gui('LOG', {
-                                'message': f"Node {node_id} became inactive"
-                            })
-                        elif self.monitor_node.nodes.get(node_id, {}).get("status") == "Inactive":
-                            logging.info(f"Node {node_id} became active again")
-                            self.send_to_gui('NODE_STATUS', {
-                                'node_id': node_id,
-                                'status': "Active"
-                            })
-                            self.send_to_gui('LOG', {
-                                'message': f"Node {node_id} became active"
-                            })
-
+            # Check for GUI messages
+            try:
+                data, addr = self.gui_socket.recvfrom(1024)
+                message = json.loads(data.decode())
+                if message['type'] == 'GUI_CONNECTED':
+                    logging.info("GUI connected - sending network state")
+                    self.send_network_state()
+            except socket.timeout:
+                pass
+            except Exception as e:
+                logging.error(f"Error receiving GUI message: {e}")
+            
+            time.sleep(0.1)  # Short sleep to prevent CPU overuse
+            
     def start(self):
         # Initialize and start monitor node
         self.monitor_node = Node(5000, NodeType.MONITOR)
