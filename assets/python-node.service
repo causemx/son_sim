@@ -1,0 +1,16 @@
+[Unit]
+Description=Python Node Service
+After=network.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pi
+WorkingDirectory=/path/to/your/project
+Environment="PYTHONPATH=/path/to/your/project"
+ExecStart=/usr/bin/python3 /path/to/your/project/node.py 192.168.1._
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

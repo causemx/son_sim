@@ -1,0 +1,25 @@
+[Unit]
+Description=Network Handler Service
+After=network.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pi
+WorkingDirectory=/path/to/your/project
+Environment="PYTHONPATH=/path/to/your/project"
+Environment="PYTHONUNBUFFERED=1"
+
+# Execution
+ExecStart=/usr/bin/python3 /path/to/your/project/handler.py
+
+# Restart configuration
+Restart=always
+RestartSec=10
+
+# Logging
+StandardOutput=append:/var/log/handler/handler.log
+StandardError=append:/var/log/handler/error.log
+
+[Install]
+WantedBy=multi-user.target
