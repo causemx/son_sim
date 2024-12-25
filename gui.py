@@ -204,10 +204,12 @@ class NetworkMonitorThread(QThread):
     master_changed = pyqtSignal(int)
     node_removed = pyqtSignal(int)
 
-    def __init__(self, host='0.0.0.0', port=5567, parent=None):
+    def __init__(self, host='192.168.1.2', port=5567, handler_ip='192.168.1.1', handler_port=5566, parent=None):
         super().__init__(parent)
         self.host = host
         self.port = port
+        self.handler_ip = handler_ip
+        self.handler_port = handler_port
         self.is_running = False
         self.socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.socket.bind((host, port))
@@ -237,9 +239,9 @@ class NetworkMonitorThread(QThread):
                 }
                 self.socket.sendto(
                     json.dumps(message).encode(),
-                    ('localhost', 5566)
+                    (self.handler_ip, self.handler_port)
                 )
-                logger.info(f"Sent connection message to handler (attempt {attempt + 1})")
+                logger.info(f"Sent connection message to handler at {self.handler_ip}:{self.handler_port} (attempt {attempt + 1})")
                 time.sleep(retry_delay)  # Give time for handler to process
                 return
             except Exception as e:
@@ -327,7 +329,7 @@ class PositionReceiverThread(QThread):
         self.is_running = False
 
 class MonitorGUI(QMainWindow):
-    def __init__(self, host='localhost', port=5567):
+    def __init__(self, gui_host='192.168.1.2', gui_port=5567, handler_host='192.168.1.1', handler_port=5566):
         super().__init__()
         self.setWindowTitle("Network Monitor")
         
@@ -369,19 +371,19 @@ class MonitorGUI(QMainWindow):
         layout.setStretch(0, 1)  # Left panel takes 1 part
         layout.setStretch(1, 3)  # Network visualizer takes 3 parts
 
-        # Start monitor thread
-        self.monitor_thread = NetworkMonitorThread(host, port)
+        # Start monitor thread with specific IP addresses
+        self.monitor_thread = NetworkMonitorThread(
+            host=gui_host,
+            port=gui_port,
+            handler_ip=handler_host,
+            handler_port=handler_port
+        )
         self.monitor_thread.message_received.connect(self.log_message)
         self.monitor_thread.node_status_changed.connect(self.network_viz.updateNodeStatus)
         self.monitor_thread.node_added.connect(self.network_viz.addNode)
         self.monitor_thread.master_changed.connect(self.network_viz.updateMasterStatus)
         self.monitor_thread.node_removed.connect(self.network_viz.removeNode)
         self.monitor_thread.start()
-
-        # Start position receiver thread
-        self.position_thread = PositionReceiverThread()
-        self.position_thread.position_updated.connect(self.network_viz.updateNodePosition)
-        self.position_thread.start()
         
     def log_message(self, message):
         self.log_text.append(message)
@@ -393,7 +395,12 @@ class MonitorGUI(QMainWindow):
 
 def main():
     app = QApplication(sys.argv)
-    window = MonitorGUI()
+    window = MonitorGUI(
+        gui_host='192.168.1.2',      # GUI's IP
+        gui_port=5567,
+        handler_host='192.168.1.1',  # Handler's IP
+        handler_port=5566
+    )
     window.show()
     sys.exit(app.exec_())
 
