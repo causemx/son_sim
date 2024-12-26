@@ -4,15 +4,12 @@ import time
 
 def main(port):
     # Create node
-    node = Node(port=port, node_type=NodeType.NODE)
-    
-    # Register monitor
-    node.register_node(port=5000, host='localhost', node_type=NodeType.MONITOR)
+    node = Node(port=port)
     
     # Register other possible nodes
     for p in range(5001, 5010):
         if p != port:  # Don't register self
-            node.register_node(port=p, host='localhost', node_type=NodeType.NODE)
+            node.register_node(port=p)
     
     node.start()
     
@@ -32,7 +29,7 @@ if __name__ == "__main__":
         sys.exit(1)
     
     port = int(sys.argv[1])
-    if port not in [5001, 5002, 5003]:
+    if port not in list(range(5001, 5010)):
         print("Port must be between 5001 and 5003")
         sys.exit(1)
         

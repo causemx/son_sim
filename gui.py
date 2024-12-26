@@ -74,17 +74,17 @@ class NetworkVisualizerWidget(QWidget):
         if node_type == "MONITOR":
             return
             
-        # Check if node already exists
-        if node_id in self.nodes:
-            return
+        # Add logging to debug node addition
+        print(f"Adding node: ID={node_id}, Type={node_type}, Port={port}")
             
-        # Check if we have a last known position for this node
-        if node_id in self.last_positions:
-            x, y = self.last_positions[node_id]
+        # Calculate position for new node
+        if len(self.nodes) == 0:
+            # First node at center
+            x = self.center_x
+            y = self.center_y
         else:
-            # Calculate default position using circular layout
-            num_nodes = len([n for n in self.nodes.values() if n["type"] != "MONITOR"])
-            angle = (num_nodes * 2 * math.pi) / 3
+            # Place nodes in a circle around the center
+            angle = (len(self.nodes) * 2 * math.pi) / 8  # Divide circle into 8 segments
             x = self.center_x + self.radius * math.cos(angle)
             y = self.center_y + self.radius * math.sin(angle)
 
@@ -95,11 +95,15 @@ class NetworkVisualizerWidget(QWidget):
             "status": "Active",
             "color": 'g',
             "port": port,
-            "is_master": False,
+            "is_master": node_id == 1,  # Set node 1 as master by default
             "last_seen": time.time()
         }
 
-        logger.info(f"Added new node: ID={node_id}, Type={node_type}, Port={port}, Position=({x:.3f}, {y:.3f})")
+        # If this is node 1, make it master
+        if node_id == 1:
+            self.updateMasterStatus(1)
+        
+        print(f"Node added: ID={node_id}, Position=({x:.2f}, {y:.2f})")
         self._redraw()
 
     def removeNode(self, node_id):
@@ -110,48 +114,44 @@ class NetworkVisualizerWidget(QWidget):
             self._redraw()
 
     def updateNodePosition(self, node_id, x, y):
-        """Update node position based on received coordinates"""
-        # Store the position for future reference
-        self.last_positions[node_id] = (x, y)
-        
         if node_id in self.nodes:
             old_pos = self.nodes[node_id]["pos"]
             self.nodes[node_id]["pos"] = (x, y)
             
-            logger.debug(f"Node {node_id} visualization position updated:")
-            logger.debug(f"  Old position: ({old_pos[0]:.3f}, {old_pos[1]:.3f})")
-            logger.debug(f"  New position: ({x:.3f}, {y:.3f})")
-            
+            print(f"Node {node_id} position updated: {old_pos} -> ({x:.2f}, {y:.2f})")
             self._redraw()
         else:
-            logger.info(f"Storing position for future node: {node_id} at ({x:.3f}, {y:.3f})")
+            print(f"Position update for unknown node: {node_id}")
 
     def updateMasterStatus(self, master_id):
+        # Reset all nodes to non-master first
         for node in self.nodes.values():
-            if node["status"] == "Active":
-                node["is_master"] = False
-                node["color"] = 'g'
+            node["is_master"] = False
+            node["color"] = 'g'
 
-        if master_id in self.nodes and self.nodes[master_id]["status"] == "Active":
+        # Set the new master
+        if master_id in self.nodes:
             self.nodes[master_id]["is_master"] = True
             self.nodes[master_id]["color"] = 'r'
+            print(f"Updated master status: Node {master_id} is now master")
+        
         self._redraw()
 
     def updateNodeStatus(self, node_id, status):
         if node_id in self.nodes:
+            self.nodes[node_id]["status"] = status
             if self.nodes[node_id]["is_master"]:
                 self.nodes[node_id]["color"] = 'r'
             else:
                 self.nodes[node_id]["color"] = 'g'
             self.nodes[node_id]["last_seen"] = time.time()
             
-            if self.nodes[node_id]["is_master"]:
-                self.updateMasterStatus(None)
-            
+            print(f"Updated node {node_id} status: {status}")
             self._redraw()
 
     def _redraw(self):
         self.ax.clear()
+        
         # Configure plot
         self.ax.set_xlim(0, 6)
         self.ax.set_ylim(0, 6)
@@ -164,10 +164,8 @@ class NetworkVisualizerWidget(QWidget):
         self.ax.set_yticks([i/2 for i in range(13)])
         self.ax.tick_params(axis='both', which='major', labelsize=8)
 
-
         # Draw connections between nodes
         nodes = list(self.nodes.items())
-        
         for i in range(len(nodes)):
             for j in range(i + 1, len(nodes)):
                 node1 = nodes[i][1]
@@ -178,14 +176,13 @@ class NetworkVisualizerWidget(QWidget):
 
         # Draw nodes
         for node_id, node in self.nodes.items():
-            node_color = 'r' if node["is_master"] else 'g'
-            
-            circle = plt.Circle(node["pos"], 0.2, color=node_color, 
+            print(f"Drawing node {node_id} at position {node['pos']}")
+            circle = plt.Circle(node["pos"], 0.2, color=node["color"], 
                             ec='black', zorder=2)
             self.ax.add_artist(circle)
             
             status_text = "Master" if node["is_master"] else "Node"
-                
+            
             self.ax.annotate(f'Node {node_id}\n({status_text})',
                         xy=node["pos"], xytext=(0, 0),
                         textcoords='offset points',
@@ -193,9 +190,12 @@ class NetworkVisualizerWidget(QWidget):
                         color='black', zorder=3)
 
         self.ax.set_xlabel('x-axis(meter)')
-        self.ax.set_ylabel('x-axis(meter)')
+        self.ax.set_ylabel('y-axis(meter)')
         self._create_legend()
-        self.figure.canvas.draw()
+        
+        # Force a canvas update
+        self.canvas.draw_idle()
+        self.canvas.flush_events()
 
 class NetworkMonitorThread(QThread):
     message_received = pyqtSignal(str)
@@ -331,8 +331,9 @@ class MonitorGUI(QMainWindow):
         super().__init__()
         self.setWindowTitle("Network Monitor")
         
-        screen = QApplication.primaryScreen().geometry()
-        self.setGeometry(screen)
+        # screen = QApplication.primaryScreen().geometry()
+        # self.setGeometry(screen)
+        self.setFixedSize(800, 640)
 
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
