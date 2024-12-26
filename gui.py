@@ -33,9 +33,9 @@ class NetworkVisualizerWidget(QWidget):
         self.setMinimumSize(600, 300)
         self.nodes = {}
         self.last_heartbeat = {}
-        self.center_x = 2.5
-        self.center_y = 2.5
-        self.radius = 1.5
+        self.center_x = 3.0
+        self.center_y = 3.0
+        self.radius = 2.0
         self.last_positions = {}  # Store last known positions for each node
         
         # Create the figure and canvas
@@ -83,8 +83,9 @@ class NetworkVisualizerWidget(QWidget):
             x = self.center_x
             y = self.center_y
         else:
-            # Place nodes in a circle around the center
-            angle = (len(self.nodes) * 2 * math.pi) / 8  # Divide circle into 8 segments
+            # Calculate default position using circular layout
+            num_nodes = len([n for n in self.nodes.values() if n["type"] != "MONITOR"])
+            angle = (num_nodes * 2 * math.pi) / 10
             x = self.center_x + self.radius * math.cos(angle)
             y = self.center_y + self.radius * math.sin(angle)
 
