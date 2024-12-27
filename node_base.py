@@ -9,10 +9,11 @@ class NodeType(Enum):
 
 
 class Node:
-    def __init__(self, port, handler_port=5000, host='localhost'):
-        self.port = port
-        self.node_id = port % 1000  # Convert port to node_id (e.g., 5001 -> 1)
-        self.host = host
+    def __init__(self, ip, handler_port=5000):
+        self.ip = ip
+        self.port = 5000  # Use fixed port for all nodes
+        self.node_id = int(ip.split('.')[-1])  # Get last byte of IP as node_id
+        self.host = ip
         self.handler_port = handler_port
         self.nodes = {}  # {node_id: (host, port)}
         self.master_id = None
@@ -20,10 +21,10 @@ class Node:
         self.election_in_progress = False
         self.last_heartbeat = {}
         self.socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        self.socket.bind((host, self.port))
+        self.socket.bind((ip, self.port))
         self.is_master = False
         
-        # Node 1 is default master
+        # Node with lowest last byte is default master
         if self.node_id == 1:
             self.is_master = True
             self.master_id = self.node_id
@@ -138,10 +139,10 @@ class Node:
                 self._broadcast_to_nodes('NEW_MASTER', data)
                 threading.Thread(target=self._send_heartbeat, daemon=True).start()
 
-    def register_node(self, port, host='localhost'):
-        """Register another node"""
-        node_id = port % 1000
-        self.nodes[node_id] = (host, port)
+    def register_node(self, ip):
+        """Register another node using IP"""
+        node_id = int(ip.split('.')[-1])
+        self.nodes[node_id] = (ip, self.port)
 
     def stop(self):
         if self.is_running:

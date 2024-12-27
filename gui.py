@@ -207,15 +207,24 @@ class NetworkMonitorThread(QThread):
     master_changed = pyqtSignal(int)
     node_removed = pyqtSignal(int)
 
-    def __init__(self, host='localhost', port=5567, parent=None):
+    def __init__(self, parent=None):
         super().__init__(parent)
-        self.host = host
-        self.port = port
-        self.is_running = False
-        self.socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        self.socket.bind((host, port))
+        # Fixed default values
+        self.gui_host = '192.168.1.2'
+        self.gui_port = 5567
+        self.handler_host = '192.168.1.1'
+        self.handler_port = 5000
         
-        # Send initial connection message in a retry loop
+        # Create and bind socket
+        self.socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            self.socket.bind((self.gui_host, self.gui_port))
+            logger.info(f"GUI bound to {self.gui_host}:{self.gui_port}")
+        except socket.error as e:
+            logger.error(f"Failed to bind GUI socket: {e}")
+            raise
+        
+        # Send initial connection message
         self.send_connection_message()
 
     def run(self):
@@ -240,7 +249,7 @@ class NetworkMonitorThread(QThread):
                 }
                 self.socket.sendto(
                     json.dumps(message).encode(),
-                    ('localhost', 5566)
+                    (self.handler_host, self.handler_port)
                 )
                 logger.info(f"Sent connection message to handler (attempt {attempt + 1})")
                 time.sleep(retry_delay)  # Give time for handler to process
@@ -330,7 +339,7 @@ class PositionReceiverThread(QThread):
         self.is_running = False
 
 class MonitorGUI(QMainWindow):
-    def __init__(self, host='localhost', port=5567):
+    def __init__(self):
         super().__init__()
         self.setWindowTitle("Network Monitor")
         
@@ -374,7 +383,7 @@ class MonitorGUI(QMainWindow):
         layout.setStretch(1, 3)  # Network visualizer takes 3 parts
 
         # Start monitor thread
-        self.monitor_thread = NetworkMonitorThread(host, port)
+        self.monitor_thread = NetworkMonitorThread(self)
         self.monitor_thread.message_received.connect(self.log_message)
         self.monitor_thread.node_status_changed.connect(self.network_viz.updateNodeStatus)
         self.monitor_thread.node_added.connect(self.network_viz.addNode)
@@ -395,11 +404,18 @@ class MonitorGUI(QMainWindow):
         self.position_thread.stop()
         event.accept()
 
+
 def main():
     app = QApplication(sys.argv)
-    window = MonitorGUI()
-    window.show()
-    sys.exit(app.exec_())
+    try:
+        window = MonitorGUI()
+        window.show()
+        print("\nGUI running on 192.168.1.2:5567")
+        print("Connected to handler at 192.168.1.1:5000")
+        sys.exit(app.exec_())
+    except Exception as e:
+        logger.error(f"Error starting GUI: {e}")
+        sys.exit(1)
 
 if __name__ == "__main__":
     main()
