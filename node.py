@@ -1,6 +1,7 @@
-from node_base import Node, NodeType
+from node_base import Node
 import sys
 import time
+
 
 def main(port):
     # Create node
@@ -25,12 +26,12 @@ def main(port):
 if __name__ == "__main__":
     if len(sys.argv) != 2:
         print("Usage: python node.py <port>")
-        print("Available ports: 5001, 5002, 5003")
+        print("Available ports: 5001 .. 5010")
         sys.exit(1)
     
     port = int(sys.argv[1])
     if port not in list(range(5001, 5010)):
-        print("Port must be between 5001 and 5003")
+        print("Port must be between 5001 and 5010")
         sys.exit(1)
         
     main(port)

@@ -119,6 +119,22 @@ class NetworkHandler:
                 'message': "Election process started"
             })
             
+        elif msg_type == 'MASTER_LOST':
+            lost_master = data['lost_master_id']
+            if lost_master == self.master_id:
+                self.master_id = None
+                logging.info(f"Master node {lost_master} lost - heartbeat timeout")
+                self.send_to_gui('LOG', {
+                    'message': f"Master node {lost_master} lost - heartbeat timeout"
+                })
+                self.send_to_gui('NODE_REMOVED', {
+                    'node_id': lost_master
+                })
+                # Clear master status in GUI
+                self.send_to_gui('MASTER_CHANGED', {
+                    'master_id': None
+                })
+
         elif msg_type == 'NEW_MASTER':
             new_master = data['master_id']
             self.master_id = new_master

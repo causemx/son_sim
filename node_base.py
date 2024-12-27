@@ -7,6 +7,7 @@ from enum import Enum
 class NodeType(Enum):
     NODE = "NODE"
 
+
 class Node:
     def __init__(self, port, handler_port=5000, host='localhost'):
         self.port = port
@@ -112,6 +113,12 @@ class Node:
             if not self.is_master and self.master_id is not None:
                 if (self.master_id not in self.last_heartbeat or 
                     time.time() - self.last_heartbeat[self.master_id] > 3):
+                    print(f"Node {self.node_id}: Master {self.master_id} heartbeat lost")
+                    # Notify handler about lost master
+                    self._send_to_handler('MASTER_LOST', {'lost_master_id': self.master_id})
+                    # Clear master info
+                    self.master_id = None
+                    # Start election
                     self._start_election()
             time.sleep(1)
 

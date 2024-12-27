@@ -130,11 +130,13 @@ class NetworkVisualizerWidget(QWidget):
             node["is_master"] = False
             node["color"] = 'g'
 
-        # Set the new master
-        if master_id in self.nodes:
+        # Set the new master if one is specified
+        if master_id is not None and master_id in self.nodes:
             self.nodes[master_id]["is_master"] = True
             self.nodes[master_id]["color"] = 'r'
             print(f"Updated master status: Node {master_id} is now master")
+        else:
+            print("No master node currently assigned")
         
         self._redraw()
 
