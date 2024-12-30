@@ -9,13 +9,14 @@ class NodeType(Enum):
 
 
 class Node:
-    def __init__(self, ip, handler_port=5000):
+    def __init__(self, ip, handler_ip='192.168.199.0', handler_port=5000):
         self.ip = ip
-        self.port = 5000  # Use fixed port for all nodes
-        self.node_id = int(ip.split('.')[-1])  # Get last byte of IP as node_id
+        self.port = 5000
+        self.node_id = int(ip.split('.')[-1])
         self.host = ip
+        self.handler_ip = handler_ip  # Store handler IP
         self.handler_port = handler_port
-        self.nodes = {}  # {node_id: (host, port)}
+        self.nodes = {}
         self.master_id = None
         self.is_running = False
         self.election_in_progress = False
@@ -24,7 +25,6 @@ class Node:
         self.socket.bind((ip, self.port))
         self.is_master = False
         
-        # Node with lowest last byte is default master
         if self.node_id == 1:
             self.is_master = True
             self.master_id = self.node_id
@@ -47,16 +47,19 @@ class Node:
             print(f"Node {self.node_id} starting as regular node")
 
     def _send_to_handler(self, message_type, data=None):
-        """Send message to handler"""
+        """Send message to handler using handler_ip"""
         message = {
             'type': message_type,
             'from': self.node_id,
             'data': data or {}
         }
-        self.socket.sendto(
-            json.dumps(message).encode(),
-            (self.host, self.handler_port)
-        )
+        try:
+            self.socket.sendto(
+                json.dumps(message).encode(),
+                (self.handler_ip, self.handler_port)  # Use handler_ip instead of self.host
+            )
+        except Exception as e:
+            print(f"Error sending to handler: {e}")
 
     def _broadcast_to_nodes(self, message_type, data=None):
         """Broadcast message to all known nodes"""

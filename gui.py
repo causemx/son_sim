@@ -209,11 +209,11 @@ class NetworkMonitorThread(QThread):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        # Fixed default values
-        self.gui_host = '192.168.1.2'
-        self.gui_port = 5567
-        self.handler_host = '192.168.1.1'
-        self.handler_port = 5000
+        # Updated IP addresses for outside network communication
+        self.gui_host = '192.168.1.1'     # GUI's outside IP
+        self.gui_port = 5567              # GUI's port
+        self.handler_host = '192.168.1.2' # Handler's outside IP
+        self.handler_port = 5567          # Handler's outside port
         
         # Create and bind socket
         self.socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -226,6 +226,7 @@ class NetworkMonitorThread(QThread):
         
         # Send initial connection message
         self.send_connection_message()
+
 
     def run(self):
         self.is_running = True
@@ -252,7 +253,7 @@ class NetworkMonitorThread(QThread):
                     (self.handler_host, self.handler_port)
                 )
                 logger.info(f"Sent connection message to handler (attempt {attempt + 1})")
-                time.sleep(retry_delay)  # Give time for handler to process
+                time.sleep(retry_delay)
                 return
             except Exception as e:
                 logger.error(f"Failed to send connection message (attempt {attempt + 1}): {e}")
@@ -411,7 +412,7 @@ def main():
         window = MonitorGUI()
         window.show()
         print("\nGUI running on 192.168.1.2:5567")
-        print("Connected to handler at 192.168.1.1:5000")
+        print("Connected to handler at 192.168.1.1:5566")
         sys.exit(app.exec_())
     except Exception as e:
         logger.error(f"Error starting GUI: {e}")

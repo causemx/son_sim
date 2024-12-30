@@ -13,30 +13,41 @@ logging.basicConfig(
 )
 
 class NetworkHandler:
-    def __init__(self):
-        # Fixed default values
-        self.handler_host = '192.168.1.1'
-        self.handler_port = 5000
-        self.gui_host = '192.168.1.2'
-        self.gui_port = 5567
+    def __init__(self, mesh_ip='192.168.199.0', outside_ip='192.168.1.2'):
+        # Mesh network interface (for nodes)
+        self.mesh_host = mesh_ip
+        self.mesh_port = 5000
+        
+        # Outside network interface (for GUI)
+        self.outside_host = outside_ip
+        self.outside_port = 5567  # Port for receiving GUI messages
+        self.gui_host = '192.168.1.1'  # GUI's outside IP
+        self.gui_port = 5567  # GUI's port
         
         self.is_running = False
         self.known_nodes = set()
-        self.master_id = 1  # Set default master to Node 1
+        self.master_id = 1
         
-        # Setup socket for node communication
+        # Setup socket for node communication (mesh network)
         self.node_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         try:
-            self.node_socket.bind((self.handler_host, self.handler_port))
+            self.node_socket.bind((self.mesh_host, self.mesh_port))
             self.node_socket.settimeout(0.1)
-            logging.info(f"Handler bound to {self.handler_host}:{self.handler_port}")
+            logging.info(f"Handler bound to mesh network: {self.mesh_host}:{self.mesh_port}")
         except socket.error as e:
-            logging.error(f"Failed to bind handler socket: {e}")
+            logging.error(f"Failed to bind mesh network socket: {e}")
             raise
-        
-        # Setup socket for GUI communication
+
+        # Setup socket for GUI communication (outside network)
         self.gui_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        
+        try:
+            self.gui_socket.bind((self.outside_host, self.outside_port))
+            self.gui_socket.settimeout(0.1)
+            logging.info(f"Handler bound to outside network: {self.outside_host}:{self.outside_port}")
+        except socket.error as e:
+            logging.error(f"Failed to bind outside network socket: {e}")
+            raise
+
         logging.info("Network handler initialized")
         logging.info(f"GUI communication configured for {self.gui_host}:{self.gui_port}")
 
@@ -159,22 +170,33 @@ class NetworkHandler:
         
         while self.is_running:
             try:
-                # Check for node messages
-                data, addr = self.node_socket.recvfrom(1024)
-                message = json.loads(data.decode())
-                
-                if message['type'] == 'GUI_CONNECTED':
-                    logging.info("GUI connected - sending network state")
-                    self.send_network_state()
-                else:
-                    self.process_node_message(message, addr)
+                # Check for node messages (mesh network)
+                try:
+                    data, addr = self.node_socket.recvfrom(1024)
+                    message = json.loads(data.decode())
                     
-            except socket.timeout:
-                continue
+                    if message['type'] == 'GUI_CONNECTED':
+                        logging.info("GUI connected - sending network state")
+                        self.send_network_state()
+                    else:
+                        self.process_node_message(message, addr)
+                except socket.timeout:
+                    pass
+                
+                # Check for GUI messages (outside network)
+                try:
+                    data, addr = self.gui_socket.recvfrom(1024)
+                    message = json.loads(data.decode())
+                    if message['type'] == 'GUI_CONNECTED':
+                        logging.info("GUI connected - sending network state")
+                        self.send_network_state()
+                except socket.timeout:
+                    pass
+                    
             except Exception as e:
                 logging.error(f"Error processing message: {e}")
             
-            time.sleep(0.1)  # Prevent CPU overuse
+            time.sleep(0.1)
 
     def start(self):
         # Start main processing thread
@@ -190,11 +212,16 @@ class NetworkHandler:
 def main():
     logging.info("Starting network handler...")
     try:
-        handler = NetworkHandler()
+        handler = NetworkHandler(
+            mesh_ip='192.168.199.0',    # Mesh network IP
+            outside_ip='192.168.1.2'    # Outside network IP
+        )
         handler.start()
         
-        print("\nHandler running on 192.168.1.1:5000")
-        print("Sending GUI updates to 192.168.1.2:5567")
+        print("\nHandler running on two interfaces:")
+        print(f"Mesh network: {handler.mesh_host}:{handler.mesh_port}")
+        print(f"Outside network: {handler.outside_host}:{handler.outside_port}")
+        print(f"Sending GUI updates to {handler.gui_host}:{handler.gui_port}")
         print("\nPress Ctrl+C to stop")
         
         while True:
