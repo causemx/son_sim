@@ -9,13 +9,13 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtCore import pyqtSignal, QThread
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
-import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
+from matplotlib.offsetbox import OffsetImage, AnnotationBbox
 import socket
 import json
 import sys
 import time
-import math
+import matplotlib.image as mpimg
 import struct
 import logging
 
@@ -38,6 +38,10 @@ class NetworkVisualizerWidget(QWidget):
         self.radius = 2.0
         self.last_positions = {}  # Store last known positions for each node
         
+        # Load drone images
+        self.leader_img = mpimg.imread('drone_leader.png')
+        self.follower_img = mpimg.imread('drone_follower.png')
+
         # Create the figure and canvas
         self.figure = Figure(figsize=(6, 4))
         self.canvas = FigureCanvas(self.figure)
@@ -64,10 +68,17 @@ class NetworkVisualizerWidget(QWidget):
 
     def _create_legend(self):
         master_patch = mpatches.Patch(color='r', label='Master Node')
-        active_patch = mpatches.Patch(color='g', label='Active Node')
+        active_patch = mpatches.Patch(color='g', label='Regular Node')
         
         self.ax.legend(handles=[master_patch, active_patch],
                     loc='upper right', bbox_to_anchor=(1.1, 1.1))
+
+    def _draw_drone(self, pos, is_master=False):
+        """Helper method to draw a drone at the given position"""
+        img = self.leader_img if is_master else self.follower_img
+        imagebox = OffsetImage(img, zoom=0.1)  # Adjust zoom factor as needed
+        ab = AnnotationBbox(imagebox, pos, frameon=False)
+        self.ax.add_artist(ab)
 
     def addNode(self, port, node_type):
         node_id = port % 1000
@@ -76,7 +87,7 @@ class NetworkVisualizerWidget(QWidget):
                 
         print(f"Adding node: ID={node_id}, Type={node_type}, Port={port}")
         
-        # Calculate position for new node using triangular layout
+        # Calculate position for new node using inverted triangular layout
         num_nodes = len([n for n in self.nodes.values() if n["type"] != "MONITOR"])
         
         # Calculate which layer this node belongs to
@@ -93,14 +104,14 @@ class NetworkVisualizerWidget(QWidget):
         # Calculate x and y coordinates
         if layer == 1:
             x = self.center_x
-            y = self.center_y + 1.5  # Top of triangle
+            y = self.center_y - 1.5  # Bottom of inverted triangle
         else:
             # Calculate x position
             layer_start_x = self.center_x - total_width/2
             x = layer_start_x + (total_width/(layer-1)) * position_in_layer
             
-            # Calculate y position (each layer is 0.8 units lower)
-            y = (self.center_y + 1.5) - ((layer-1) * 0.8)
+            # Calculate y position (each layer is 0.8 units higher)
+            y = (self.center_y - 1.5) + ((layer-1) * 0.8)
 
         pos = (x, y)
         self.nodes[node_id] = {
@@ -189,20 +200,21 @@ class NetworkVisualizerWidget(QWidget):
                         [node1["pos"][1], node2["pos"][1]], 
                         color='lightgray', zorder=1)
 
-        # Draw nodes
+        # Draw nodes using drone icons
         for node_id, node in self.nodes.items():
             print(f"Drawing node {node_id} at position {node['pos']}")
-            circle = plt.Circle(node["pos"], 0.2, color=node["color"], 
-                            ec='black', zorder=2)
-            self.ax.add_artist(circle)
+            self._draw_drone(node["pos"], node["is_master"])
             
+            # Add node label
             status_text = "Master" if node["is_master"] else "Node"
-            
             self.ax.annotate(f'Node {node_id}\n({status_text})',
-                        xy=node["pos"], xytext=(0, 0),
+                        xy=node["pos"], 
+                        xytext=(0, 20),  # Offset label above the drone
                         textcoords='offset points',
-                        ha='center', va='center',
-                        color='black', zorder=3)
+                        ha='center', 
+                        va='bottom',
+                        color='black', 
+                        zorder=3)
 
         self.ax.set_xlabel('x-axis(meter)')
         self.ax.set_ylabel('y-axis(meter)')
