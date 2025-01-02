@@ -7,22 +7,24 @@ from enum import Enum
 class NodeType(Enum):
     NODE = "NODE"
 
-
 class Node:
-    def __init__(self, port, handler_port=5000, host='localhost'):
-        self.port = port
-        self.node_id = port % 1000  # Convert port to node_id (e.g., 5001 -> 1)
-        self.host = host
+    def __init__(self, ip, handler_ip='192.168.199.0', handler_port=5000):
+        self.ip = ip
+        self.port = 5000  # Fixed port for all nodes
+        self.node_id = int(ip.split('.')[-1])  # Use last byte of IP as node ID
+        self.host = ip
+        self.handler_ip = handler_ip
         self.handler_port = handler_port
-        self.nodes = {}  # {node_id: (host, port)}
+        self.nodes = {}  # {node_id: (host_ip, port)}
         self.master_id = None
         self.is_running = False
+        self.election_in_progress = False
         self.last_heartbeat = {}
         self.socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        self.socket.bind((host, self.port))
+        self.socket.bind((ip, self.port))
         self.is_master = False
         
-        # Node 1 is default master
+        # Node with lowest IP last byte (1) is default master
         if self.node_id == 1:
             self.is_master = True
             self.master_id = self.node_id
@@ -37,7 +39,7 @@ class Node:
         # Start heartbeat monitoring for all nodes
         threading.Thread(target=self._monitor_heartbeat, daemon=True).start()
         
-        # If Node 1, start as master
+        # If lowest IP (1), start as master
         if self.node_id == 1:
             threading.Thread(target=self._send_heartbeat, daemon=True).start()
             print(f"Node {self.node_id} starting as master")
@@ -51,10 +53,13 @@ class Node:
             'from': self.node_id,
             'data': data or {}
         }
-        self.socket.sendto(
-            json.dumps(message).encode(),
-            (self.host, self.handler_port)
-        )
+        try:
+            self.socket.sendto(
+                json.dumps(message).encode(),
+                (self.handler_ip, self.handler_port)
+            )
+        except Exception as e:
+            print(f"Error sending to handler: {e}")
 
     def _broadcast_to_nodes(self, message_type, data=None):
         """Broadcast message to all known nodes"""
@@ -64,7 +69,10 @@ class Node:
                 'from': self.node_id,
                 'data': data or {}
             }
-            self.socket.sendto(json.dumps(message).encode(), (host, port))
+            try:
+                self.socket.sendto(json.dumps(message).encode(), (host, port))
+            except Exception as e:
+                print(f"Error broadcasting to node {node_id}: {e}")
 
     def _handle_messages(self):
         while self.is_running:
@@ -84,10 +92,22 @@ class Node:
             self.last_heartbeat[from_node] = time.time()
             self.master_id = from_node
 
+        elif msg_type == 'ELECTION':
+            # Only participate in election if master is gone
+            if not self.election_in_progress and self.master_id is None:
+                self.election_in_progress = True
+                if self.node_id < from_node:  # Changed to pick lowest ID
+                    self._broadcast_to_nodes('ELECTION_RESPONSE')
+                    self._start_election()
+
+        elif msg_type == 'ELECTION_RESPONSE':
+            self.election_in_progress = False
+
         elif msg_type == 'NEW_MASTER':
             new_master_id = data['master_id']
             self.master_id = new_master_id
             self.is_master = (self.node_id == new_master_id)
+            self.election_in_progress = False
             if self.is_master:
                 threading.Thread(target=self._send_heartbeat, daemon=True).start()
 
@@ -107,6 +127,8 @@ class Node:
                     self._send_to_handler('MASTER_LOST', {'lost_master_id': self.master_id})
                     # Clear master info
                     self.master_id = None
+                    # Start election
+                    self._start_election()
             time.sleep(1)
 
     def _start_election(self):
@@ -116,7 +138,7 @@ class Node:
             self._broadcast_to_nodes('ELECTION')
             time.sleep(2)
             
-            if self.election_in_progress:  # No higher ID responded
+            if self.election_in_progress:  # No lower ID responded
                 self.is_master = True
                 self.master_id = self.node_id
                 print(f"Node {self.node_id} becoming new master")
@@ -125,10 +147,10 @@ class Node:
                 self._broadcast_to_nodes('NEW_MASTER', data)
                 threading.Thread(target=self._send_heartbeat, daemon=True).start()
 
-    def register_node(self, port, host='localhost'):
-        """Register another node"""
-        node_id = port % 1000
-        self.nodes[node_id] = (host, port)
+    def register_node(self, ip):
+        """Register another node using IP"""
+        node_id = int(ip.split('.')[-1])
+        self.nodes[node_id] = (ip, self.port)
 
     def stop(self):
         if self.is_running:

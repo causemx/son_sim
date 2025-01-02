@@ -1,3 +1,4 @@
+import sys
 import socket
 import json
 import time
@@ -12,23 +13,43 @@ logging.basicConfig(
 )
 
 class NetworkHandler:
-    def __init__(self, handler_port=5000, gui_port=5567):
-        self.handler_port = handler_port
-        self.gui_port = gui_port
+    def __init__(self, mesh_ip='192.168.199.0', outside_ip='192.168.1.2'):
+        # Mesh network interface (for nodes)
+        self.mesh_host = mesh_ip
+        self.mesh_port = 5000
+        
+        # Outside network interface (for GUI)
+        self.outside_host = outside_ip
+        self.outside_port = 5566  # Port for receiving GUI messages
+        self.gui_host = '192.168.1.1'  # GUI's outside IP
+        self.gui_port = 5567  # GUI's port
+        
         self.is_running = False
         self.known_nodes = set()
-        self.master_id = 1  # Set default master to Node 1
+        self.master_id = 1
         
-        # Setup socket for node communication
+        # Setup socket for node communication (mesh network)
         self.node_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        self.node_socket.bind(('localhost', handler_port))
-        self.node_socket.settimeout(0.1)
+        try:
+            self.node_socket.bind((self.mesh_host, self.mesh_port))
+            self.node_socket.settimeout(0.1)
+            logging.info(f"Handler bound to mesh network: {self.mesh_host}:{self.           mesh_port}")
+        except socket.error as e:
+            logging.error(f"Failed to bind mesh network socket: {e}")
+            raise
         
-        # Setup socket for GUI communication
+        # Setup socket for GUI communication (outside network)
         self.gui_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        
-        logging.info(f"Network handler initialized on port {handler_port}")
-        logging.info(f"GUI communication port: {gui_port}")
+        try:
+            self.gui_socket.bind((self.outside_host, self.outside_port))
+            self.gui_socket.settimeout(0.1)
+            logging.info(f"Handler bound to outside network: {self.outside_host}:{self.     outside_port}")
+        except socket.error as e:
+            logging.error(f"Failed to bind outside network socket: {e}")
+            raise
+ 
+        logging.info("Network handler initialized")
+        logging.info(f"GUI communication configured for {self.gui_host}:{self.gui_port}")
 
     def assign_new_master(self):
         """Assign the node with next smallest ID as the new master"""
@@ -54,26 +75,28 @@ class NetworkHandler:
             except ValueError:
                 # If current master not in list, take smallest ID
                 new_master_id = current_nodes[0]
-        
+
         self.master_id = new_master_id
-        
+
         # Notify all nodes about new master
         message = {
             'type': 'NEW_MASTER',
             'from': 0,  # From handler
             'data': {'master_id': new_master_id}
         }
-        
-        # Broadcast to all known nodes
+
+        # Broadcast to all known nodes using IP addresses
+        base_ip = '.'.join(self.mesh_host.split('.')[:-1])  # Get network prefix (e.g., "192.168.199")
         for node_id in self.known_nodes:
             try:
+                node_ip = f"{base_ip}.{node_id}"  # Construct full IP using node_id as last byte
                 self.node_socket.sendto(
                     json.dumps(message).encode(),
-                    ('localhost', 5000 + node_id)
+                    (node_ip, self.mesh_port)  # Use mesh_port (5000) for all nodes
                 )
             except Exception as e:
                 logging.error(f"Error sending new master message to node {node_id}: {e}")
-        
+
         # Update GUI
         self.send_to_gui('LOG', {
             'message': f"Node {new_master_id} assigned as new master"
@@ -81,21 +104,19 @@ class NetworkHandler:
         self.send_to_gui('MASTER_CHANGED', {
             'master_id': new_master_id
         })
-        
+
         logging.info(f"Assigned Node {new_master_id} as new master")
 
     def send_to_gui(self, message_type, data):
         message = {
-            'type': message_type,
-            'data': data
-        }
+             'type': message_type,
+             'data': data
+         }
         try:
-            msg_json = json.dumps(message)
             self.gui_socket.sendto(
-                msg_json.encode(),
-                ('localhost', self.gui_port)
+                json.dumps(message).encode(),
+                (self.gui_host, self.gui_port)
             )
-            logging.info(f"OUT -> GUI [{message_type}]: {json.dumps(data, indent=2)}")
         except Exception as e:
             logging.error(f"Error sending to GUI: {e}")
 
@@ -222,16 +243,27 @@ class NetworkHandler:
 
 def main():
     logging.info("Starting network handler...")
-    handler = NetworkHandler()
-    handler.start()
-    
     try:
+        handler = NetworkHandler(
+            mesh_ip='192.168.199.0',    # Mesh network IP
+            outside_ip='192.168.1.2'    # Outside network IP
+        )
+        handler.start()
+        
+        print("\nHandler running on two interfaces:")
+        print(f"Mesh network: {handler.mesh_host}:{handler.mesh_port}")
+        print(f"Outside network: {handler.outside_host}:{handler.outside_port}")
+        print(f"Sending GUI updates to {handler.gui_host}:{handler.gui_port}")
+        print("\nPress Ctrl+C to stop")
+        
         while True:
             time.sleep(1)
     except KeyboardInterrupt:
-        logging.info("Shutting down network handler...")
         handler.stop()
         print("\nHandler stopped")
+    except Exception as e:
+        logging.error(f"Error running handler: {e}")
+        sys.exit(1)
 
 if __name__ == "__main__":
     main()
