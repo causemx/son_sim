@@ -13,7 +13,7 @@ logging.basicConfig(
 
 class NetworkHandler:
     def __init__(self, handler_port=5000, gui_port=5567):
-        self.handler_port = handler_port  # Now using port 5000 (former monitor port)
+        self.handler_port = handler_port
         self.gui_port = gui_port
         self.is_running = False
         self.known_nodes = set()
@@ -29,6 +29,60 @@ class NetworkHandler:
         
         logging.info(f"Network handler initialized on port {handler_port}")
         logging.info(f"GUI communication port: {gui_port}")
+
+    def assign_new_master(self):
+        """Assign the node with next smallest ID as the new master"""
+        if not self.known_nodes:
+            self.master_id = None
+            return
+
+        # Find the next smallest ID larger than current master
+        current_nodes = sorted(list(self.known_nodes))
+        if self.master_id is None:
+            # If no master exists, pick the smallest ID
+            new_master_id = current_nodes[0]
+        else:
+            # Find the next smallest ID after the failed master
+            try:
+                current_index = current_nodes.index(self.master_id)
+                if current_index + 1 < len(current_nodes):
+                    # Take next ID if available
+                    new_master_id = current_nodes[current_index + 1]
+                else:
+                    # Wrap around to smallest ID if at end
+                    new_master_id = current_nodes[0]
+            except ValueError:
+                # If current master not in list, take smallest ID
+                new_master_id = current_nodes[0]
+        
+        self.master_id = new_master_id
+        
+        # Notify all nodes about new master
+        message = {
+            'type': 'NEW_MASTER',
+            'from': 0,  # From handler
+            'data': {'master_id': new_master_id}
+        }
+        
+        # Broadcast to all known nodes
+        for node_id in self.known_nodes:
+            try:
+                self.node_socket.sendto(
+                    json.dumps(message).encode(),
+                    ('localhost', 5000 + node_id)
+                )
+            except Exception as e:
+                logging.error(f"Error sending new master message to node {node_id}: {e}")
+        
+        # Update GUI
+        self.send_to_gui('LOG', {
+            'message': f"Node {new_master_id} assigned as new master"
+        })
+        self.send_to_gui('MASTER_CHANGED', {
+            'master_id': new_master_id
+        })
+        
+        logging.info(f"Assigned Node {new_master_id} as new master")
 
     def send_to_gui(self, message_type, data):
         message = {
@@ -102,10 +156,10 @@ class NetworkHandler:
                     'node_id': from_node
                 })
                 
-                # If master node was removed, notify GUI
+                # If master node was removed, assign new master
                 if from_node == self.master_id:
-                    self.master_id = None
-                    logging.info("Master node removed - waiting for new election")
+                    logging.info("Master node removed - assigning new master")
+                    self.assign_new_master()
         
         elif msg_type == 'HEARTBEAT':
             if from_node == self.master_id:
@@ -113,38 +167,25 @@ class NetworkHandler:
                     'master_id': from_node
                 })
             
-        elif msg_type == 'ELECTION':
-            logging.info(f"Election process started by Node {from_node}")
-            self.send_to_gui('LOG', {
-                'message': "Election process started"
-            })
-            
         elif msg_type == 'MASTER_LOST':
             lost_master = data['lost_master_id']
             if lost_master == self.master_id:
-                self.master_id = None
                 logging.info(f"Master node {lost_master} lost - heartbeat timeout")
+                
+                # Remove the lost node from known nodes
+                if lost_master in self.known_nodes:
+                    self.known_nodes.remove(lost_master)
+                    # Send node removal to GUI
+                    self.send_to_gui('NODE_REMOVED', {
+                        'node_id': lost_master
+                    })
+                
                 self.send_to_gui('LOG', {
                     'message': f"Master node {lost_master} lost - heartbeat timeout"
                 })
-                self.send_to_gui('NODE_REMOVED', {
-                    'node_id': lost_master
-                })
-                # Clear master status in GUI
-                self.send_to_gui('MASTER_CHANGED', {
-                    'master_id': None
-                })
-
-        elif msg_type == 'NEW_MASTER':
-            new_master = data['master_id']
-            self.master_id = new_master
-            logging.info(f"Node {self.master_id} elected as new master")
-            self.send_to_gui('LOG', {
-                'message': f"Node {self.master_id} became master"
-            })
-            self.send_to_gui('MASTER_CHANGED', {
-                'master_id': self.master_id
-            })
+                
+                # Assign new master
+                self.assign_new_master()
 
     def run(self):
         self.is_running = True
