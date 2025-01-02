@@ -69,13 +69,13 @@ class NetworkVisualizerWidget(QWidget):
         self.ax.legend(handles=[master_patch, active_patch],
                     loc='upper right', bbox_to_anchor=(1.1, 1.1))
 
-    def addNode(self, port, node_type):
-        node_id = port % 1000
+    def addNode(self, ip_last_byte, node_type):
+        node_id = ip_last_byte  # Use last byte of IP as node ID
         if node_type == "MONITOR":
             return
             
         # Add logging to debug node addition
-        print(f"Adding node: ID={node_id}, Type={node_type}, Port={port}")
+        print(f"Adding node: ID={node_id}, Type={node_type}, IP Last Byte={ip_last_byte}")
             
         # Calculate position for new node
         if len(self.nodes) == 0:
@@ -95,7 +95,7 @@ class NetworkVisualizerWidget(QWidget):
             "type": node_type,
             "status": "Active",
             "color": 'g',
-            "port": port,
+            "ip_last_byte": ip_last_byte,
             "is_master": node_id == 1,  # Set node 1 as master by default
             "last_seen": time.time()
         }
@@ -185,8 +185,9 @@ class NetworkVisualizerWidget(QWidget):
             self.ax.add_artist(circle)
             
             status_text = "Master" if node["is_master"] else "Node"
+            ip_text = f".{node['ip_last_byte']}"  # Display last byte of IP
             
-            self.ax.annotate(f'Node {node_id}\n({status_text})',
+            self.ax.annotate(f'Node {ip_text}\n({status_text})',
                         xy=node["pos"], xytext=(0, 0),
                         textcoords='offset points',
                         ha='center', va='center',
@@ -200,6 +201,7 @@ class NetworkVisualizerWidget(QWidget):
         self.canvas.draw_idle()
         self.canvas.flush_events()
 
+
 class NetworkMonitorThread(QThread):
     message_received = pyqtSignal(str)
     node_status_changed = pyqtSignal(int, str)
@@ -207,15 +209,24 @@ class NetworkMonitorThread(QThread):
     master_changed = pyqtSignal(int)
     node_removed = pyqtSignal(int)
 
-    def __init__(self, host='localhost', port=5567, parent=None):
+    def __init__(self, parent=None):
         super().__init__(parent)
-        self.host = host
-        self.port = port
-        self.is_running = False
-        self.socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        self.socket.bind((host, port))
+        # Updated IP addresses for outside network communication
+        self.gui_host = '192.168.1.2'     # GUI's outside IP
+        self.gui_port = 5567              # GUI's port
+        self.handler_host = '192.168.1.1' # Handler's outside IP
+        self.handler_port = 5566          # Handler's outside port
         
-        # Send initial connection message in a retry loop
+        # Create and bind socket
+        self.socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            self.socket.bind((self.gui_host, self.gui_port))
+            logger.info(f"GUI bound to {self.gui_host}:{self.gui_port}")
+        except socket.error as e:
+            logger.error(f"Failed to bind GUI socket: {e}")
+            raise
+        
+        # Send initial connection message
         self.send_connection_message()
 
     def run(self):
@@ -240,10 +251,10 @@ class NetworkMonitorThread(QThread):
                 }
                 self.socket.sendto(
                     json.dumps(message).encode(),
-                    ('localhost', 5566)
+                    (self.handler_host, self.handler_port)
                 )
                 logger.info(f"Sent connection message to handler (attempt {attempt + 1})")
-                time.sleep(retry_delay)  # Give time for handler to process
+                time.sleep(retry_delay)
                 return
             except Exception as e:
                 logger.error(f"Failed to send connection message (attempt {attempt + 1}): {e}")
@@ -260,8 +271,8 @@ class NetworkMonitorThread(QThread):
         if msg_type == 'LOG':
             self.message_received.emit(data['message'])
         elif msg_type == 'NODE_ADDED':
-            logger.info(f"Adding node: port={data['port']}, type={data['node_type']}")
-            self.node_added.emit(data['port'], data['node_type'])
+            logger.info(f"Adding node: IP last byte={data['ip_last_byte']}, type={data['node_type']}")
+            self.node_added.emit(data['ip_last_byte'], data['node_type'])
         elif msg_type == 'NODE_STATUS':
             self.node_status_changed.emit(data['node_id'], data['status'])
         elif msg_type == 'MASTER_CHANGED':
@@ -330,7 +341,7 @@ class PositionReceiverThread(QThread):
         self.is_running = False
 
 class MonitorGUI(QMainWindow):
-    def __init__(self, host='localhost', port=5567):
+    def __init__(self):
         super().__init__()
         self.setWindowTitle("Network Monitor")
         
@@ -374,7 +385,7 @@ class MonitorGUI(QMainWindow):
         layout.setStretch(1, 3)  # Network visualizer takes 3 parts
 
         # Start monitor thread
-        self.monitor_thread = NetworkMonitorThread(host, port)
+        self.monitor_thread = NetworkMonitorThread(self)
         self.monitor_thread.message_received.connect(self.log_message)
         self.monitor_thread.node_status_changed.connect(self.network_viz.updateNodeStatus)
         self.monitor_thread.node_added.connect(self.network_viz.addNode)
@@ -395,11 +406,18 @@ class MonitorGUI(QMainWindow):
         self.position_thread.stop()
         event.accept()
 
+
 def main():
     app = QApplication(sys.argv)
-    window = MonitorGUI()
-    window.show()
-    sys.exit(app.exec_())
+    try:
+        window = MonitorGUI()
+        window.show()
+        print("\nGUI running on 192.168.1.2:5567")
+        print("Connected to handler at 192.168.1.1:5566")
+        sys.exit(app.exec_())
+    except Exception as e:
+        logger.error(f"Error starting GUI: {e}")
+        sys.exit(1)
 
 if __name__ == "__main__":
     main()
