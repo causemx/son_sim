@@ -73,21 +73,34 @@ class NetworkVisualizerWidget(QWidget):
         node_id = port % 1000
         if node_type == "MONITOR":
             return
-            
-        # Add logging to debug node addition
+                
         print(f"Adding node: ID={node_id}, Type={node_type}, Port={port}")
-            
-        # Calculate position for new node
-        if len(self.nodes) == 0:
-            # First node at center
+        
+        # Calculate position for new node using triangular layout
+        num_nodes = len([n for n in self.nodes.values() if n["type"] != "MONITOR"])
+        
+        # Calculate which layer this node belongs to
+        layer = 1
+        nodes_before = 0
+        while nodes_before + layer <= num_nodes:
+            nodes_before += layer
+            layer += 1
+        
+        # Calculate position within the layer
+        position_in_layer = num_nodes - nodes_before
+        total_width = (layer - 1) * 0.8  # Width between nodes in the same layer
+        
+        # Calculate x and y coordinates
+        if layer == 1:
             x = self.center_x
-            y = self.center_y
+            y = self.center_y + 1.5  # Top of triangle
         else:
-            # Calculate default position using circular layout
-            num_nodes = len([n for n in self.nodes.values() if n["type"] != "MONITOR"])
-            angle = (num_nodes * 2 * math.pi) / 10
-            x = self.center_x + self.radius * math.cos(angle)
-            y = self.center_y + self.radius * math.sin(angle)
+            # Calculate x position
+            layer_start_x = self.center_x - total_width/2
+            x = layer_start_x + (total_width/(layer-1)) * position_in_layer
+            
+            # Calculate y position (each layer is 0.8 units lower)
+            y = (self.center_y + 1.5) - ((layer-1) * 0.8)
 
         pos = (x, y)
         self.nodes[node_id] = {
@@ -96,11 +109,10 @@ class NetworkVisualizerWidget(QWidget):
             "status": "Active",
             "color": 'g',
             "port": port,
-            "is_master": node_id == 1,  # Set node 1 as master by default
+            "is_master": node_id == 1,
             "last_seen": time.time()
         }
 
-        # If this is node 1, make it master
         if node_id == 1:
             self.updateMasterStatus(1)
         
