@@ -13,7 +13,7 @@ logging.basicConfig(
 )
 
 class NetworkHandler:
-    def __init__(self, mesh_ip='192.168.199.0', outside_ip='192.168.1.2'):
+    def __init__(self, mesh_ip='192.168.199.0', outside_ip='0.0.0.0'):
         # Mesh network interface (for nodes)
         self.mesh_host = mesh_ip
         self.mesh_port = 5000
@@ -21,7 +21,7 @@ class NetworkHandler:
         # Outside network interface (for GUI)
         self.outside_host = outside_ip
         self.outside_port = 5566  # Port for receiving GUI messages
-        self.gui_host = '192.168.1.1'  # GUI's outside IP
+        self.gui_host = '192.168.1.2'  # GUI's outside IP
         self.gui_port = 5567  # GUI's port
         
         self.is_running = False
@@ -127,7 +127,7 @@ class NetworkHandler:
         # Send all known nodes
         for node_id in self.known_nodes:
             self.send_to_gui('NODE_ADDED', {
-                'port': 5000 + node_id,
+                'ip_last_byte': node_id,
                 'node_type': 'NODE'
             })
         
@@ -153,7 +153,7 @@ class NetworkHandler:
             
             # Send node addition to GUI
             self.send_to_gui('NODE_ADDED', {
-                'port': 5000 + from_node,
+                'ip_last_byte': from_node,
                 'node_type': 'NODE'
             })
             
@@ -244,10 +244,7 @@ class NetworkHandler:
 def main():
     logging.info("Starting network handler...")
     try:
-        handler = NetworkHandler(
-            mesh_ip='192.168.199.0',    # Mesh network IP
-            outside_ip='192.168.1.2'    # Outside network IP
-        )
+        handler = NetworkHandler()
         handler.start()
         
         print("\nHandler running on two interfaces:")

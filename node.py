@@ -9,7 +9,7 @@ def main(ip, handler_ip='192.168.199.0'):
     
     # Register other possible nodes in network
     base_ip = '.'.join(ip.split('.')[:-1])  # Get network prefix (e.g., "192.168.199")
-    for last_byte in range(1, 10):  # Nodes 1-9
+    for last_byte in range(1, 11):  # Nodes 1-10
         node_ip = f"{base_ip}.{last_byte}"
         if node_ip != ip:  # Don't register self
             node.register_node(ip=node_ip)
@@ -35,10 +35,10 @@ def validate_ip(ip):
         # Check if it's a valid IP address
         ipaddress.ip_address(ip)
         
-        # Get the last byte and check range (1-9)
+        # Get the last byte and check range (1-10)
         last_byte = int(ip.split('.')[-1])
-        if last_byte < 1 or last_byte > 9:
-            print("Error: Last byte of IP must be between 1 and 9")
+        if last_byte < 1 or last_byte > 10:
+            print("Error: Last byte of IP must be between 1 and 10")
             return False
             
         return True
