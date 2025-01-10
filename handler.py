@@ -76,6 +76,36 @@ class NetworkHandler:
                 # If current master not in list, take smallest ID
                 new_master_id = current_nodes[0]
 
+        # Notify GUI about stabilization period
+        self.send_to_gui('STABILIZATION_START', {
+            'message': 'Network stabilization in progress - pausing updates'
+        })
+
+        # Wait for network to stabilize
+        time.sleep(5)  # 5 second delay
+
+        # After delay, get fresh list of nodes
+        current_nodes = sorted(list(self.known_nodes))
+        if not current_nodes:  # If no nodes left after waiting
+            self.master_id = None
+            self.send_to_gui('STABILIZATION_END', {
+                'message': 'Network stabilization complete'
+            })
+            return
+
+        # Recalculate new master based on current nodes
+        if self.master_id is None or self.master_id not in current_nodes:
+            new_master_id = current_nodes[0]
+        else:
+            try:
+                current_index = current_nodes.index(self.master_id)
+                if current_index + 1 < len(current_nodes):
+                    new_master_id = current_nodes[current_index + 1]
+                else:
+                    new_master_id = current_nodes[0]
+            except ValueError:
+                new_master_id = current_nodes[0]
+
         self.master_id = new_master_id
 
         # Notify all nodes about new master
@@ -86,18 +116,23 @@ class NetworkHandler:
         }
 
         # Broadcast to all known nodes using IP addresses
-        base_ip = '.'.join(self.mesh_host.split('.')[:-1])  # Get network prefix (e.g., "192.168.199")
+        base_ip = '.'.join(self.mesh_host.split('.')[:-1])
         for node_id in self.known_nodes:
             try:
-                node_ip = f"{base_ip}.{node_id}"  # Construct full IP using node_id as last byte
+                node_ip = f"{base_ip}.{node_id}"
                 self.node_socket.sendto(
                     json.dumps(message).encode(),
-                    (node_ip, self.mesh_port)  # Use mesh_port (5000) for all nodes
+                    (node_ip, self.mesh_port)
                 )
             except Exception as e:
                 logging.error(f"Error sending new master message to node {node_id}: {e}")
 
-        # Update GUI
+        # Notify GUI that stabilization is complete
+        self.send_to_gui('STABILIZATION_END', {
+            'message': 'Network stabilization complete'
+        })
+
+        # Update GUI with new master
         self.send_to_gui('LOG', {
             'message': f"Node {new_master_id} assigned as new master"
         })

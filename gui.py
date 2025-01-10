@@ -32,6 +32,10 @@ logger = logging.getLogger(__name__)
 class NetworkVisualizerWidget(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
+        
+        # Add stabilization flag
+        self.stabilization_in_progress = False
+        
         self.setMinimumSize(600, 300)
         self.nodes = {}
         self.last_heartbeat = {}
@@ -234,6 +238,8 @@ class NetworkMonitorThread(QThread):
     node_added = pyqtSignal(int, str)
     master_changed = pyqtSignal(int)
     node_removed = pyqtSignal(int)
+    stabilization_started = pyqtSignal()
+    stabilization_ended = pyqtSignal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -242,7 +248,7 @@ class NetworkMonitorThread(QThread):
         self.gui_port = 5567              # GUI's port
         self.handler_host = '192.168.1.1' # Handler's outside IP
         self.handler_port = 5566          # Handler's outside port
-        
+
         # Create and bind socket
         self.socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         try:
@@ -291,13 +297,15 @@ class NetworkMonitorThread(QThread):
         msg_type = message['type']
         data = message.get('data', {})
 
-        # Log received message for debugging
-        logger.debug(f"Received message: type={msg_type}, data={data}")
-
-        if msg_type == 'LOG':
+        if msg_type == 'STABILIZATION_START':
+            self.stabilization_started.emit()
+            self.message_received.emit(data['message'])
+        elif msg_type == 'STABILIZATION_END':
+            self.stabilization_ended.emit()
+            self.message_received.emit(data['message'])
+        elif msg_type == 'LOG':
             self.message_received.emit(data['message'])
         elif msg_type == 'NODE_ADDED':
-            logger.info(f"Adding node: IP last byte={data['ip_last_byte']}, type={data['node_type']}")
             self.node_added.emit(data['ip_last_byte'], data['node_type'])
         elif msg_type == 'NODE_STATUS':
             self.node_status_changed.emit(data['node_id'], data['status'])
@@ -305,6 +313,7 @@ class NetworkMonitorThread(QThread):
             self.master_changed.emit(data['master_id'])
         elif msg_type == "NODE_REMOVED":
             self.node_removed.emit(data['node_id'])
+
 
     def stop(self):
         self.is_running = False
@@ -423,7 +432,19 @@ class MonitorGUI(QMainWindow):
         self.position_thread = PositionReceiverThread()
         self.position_thread.position_updated.connect(self.network_viz.updateNodePosition)
         self.position_thread.start()
-        
+
+        # Connect stabilization signals
+        self.monitor_thread.stabilization_started.connect(
+            lambda: setattr(self.network_viz, 'stabilization_in_progress', True)
+        )
+        self.monitor_thread.stabilization_ended.connect(
+            self._handle_stabilization_end
+        )
+
+    def _handle_stabilization_end(self):
+        self.network_viz.stabilization_in_progress = False
+        self.network_viz._redraw()  # Force redraw after stabilization
+
     def log_message(self, message):
         self.log_text.append(message)
 
