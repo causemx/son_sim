@@ -27,6 +27,9 @@ class NetworkHandler:
         self.is_running = False
         self.known_nodes = set()
         self.master_id = 1
+        self.last_network_change = time.time()
+        self.previous_nodes = set()
+        self.stabilization_period = 15  # 15 seconds stabilization period
         
         # Setup socket for node communication (mesh network)
         self.node_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -51,11 +54,40 @@ class NetworkHandler:
         logging.info("Network handler initialized")
         logging.info(f"GUI communication configured for {self.gui_host}:{self.gui_port}")
 
+    def check_network_stable(self):
+        """Check if network has been stable for the required period"""
+        current_time = time.time()
+        
+        # Check if nodes have changed
+        if self.known_nodes != self.previous_nodes:
+            self.last_network_change = current_time
+            self.previous_nodes = self.known_nodes.copy()
+            return False
+            
+        # Check if enough time has passed since last change
+        time_since_change = current_time - self.last_network_change
+        return time_since_change >= self.stabilization_period
+
     def assign_new_master(self):
-        """Assign the node with next smallest ID as the new master"""
+        """Assign the node with next smallest ID as the new master after network stabilization"""
         if not self.known_nodes:
             self.master_id = None
             return
+
+        # Wait for network stabilization
+        logging.info("Waiting for network stabilization...")
+        self.send_to_gui('LOG', {
+            'message': "Network master lost - waiting for network stabilization"
+        })
+        
+        # Keep checking network stability
+        while not self.check_network_stable():
+            time.sleep(1)
+            
+        logging.info("Network has stabilized - assigning new master")
+        self.send_to_gui('LOG', {
+            'message': "Network has stabilized - assigning new master"
+        })
 
         # Find the next smallest ID larger than current master
         current_nodes = sorted(list(self.known_nodes))
@@ -65,48 +97,22 @@ class NetworkHandler:
         else:
             # Find the next smallest ID after the failed master
             try:
+                # Get index of current master in sorted list
                 current_index = current_nodes.index(self.master_id)
-                if current_index + 1 < len(current_nodes):
-                    # Take next ID if available
-                    new_master_id = current_nodes[current_index + 1]
-                else:
-                    # Wrap around to smallest ID if at end
-                    new_master_id = current_nodes[0]
+                # Get next ID in sequence, wrapping around to start if at end
+                next_index = (current_index + 1) % len(current_nodes)
+                new_master_id = current_nodes[next_index]
             except ValueError:
                 # If current master not in list, take smallest ID
                 new_master_id = current_nodes[0]
 
-        # Notify GUI about stabilization period
-        self.send_to_gui('STABILIZATION_START', {
-            'message': 'Network stabilization in progress - pausing updates'
-        })
-
-        # Wait for network to stabilize
-        time.sleep(5)  # 5 second delay
-
-        # After delay, get fresh list of nodes
-        current_nodes = sorted(list(self.known_nodes))
-        if not current_nodes:  # If no nodes left after waiting
-            self.master_id = None
-            self.send_to_gui('STABILIZATION_END', {
-                'message': 'Network stabilization complete'
-            })
-            return
-
-        # Recalculate new master based on current nodes
-        if self.master_id is None or self.master_id not in current_nodes:
-            new_master_id = current_nodes[0]
-        else:
-            try:
-                current_index = current_nodes.index(self.master_id)
-                if current_index + 1 < len(current_nodes):
-                    new_master_id = current_nodes[current_index + 1]
-                else:
-                    new_master_id = current_nodes[0]
-            except ValueError:
-                new_master_id = current_nodes[0]
-
         self.master_id = new_master_id
+        
+        # Notify GUI about transition period
+        self.send_to_gui('MASTER_TRANSITION_START', {})
+        
+        # Wait for 5 seconds
+        time.sleep(5)
 
         # Notify all nodes about new master
         message = {
@@ -127,17 +133,13 @@ class NetworkHandler:
             except Exception as e:
                 logging.error(f"Error sending new master message to node {node_id}: {e}")
 
-        # Notify GUI that stabilization is complete
-        self.send_to_gui('STABILIZATION_END', {
-            'message': 'Network stabilization complete'
-        })
-
-        # Update GUI with new master
-        self.send_to_gui('LOG', {
-            'message': f"Node {new_master_id} assigned as new master"
-        })
+        # Update GUI about completion of transition and new master
+        self.send_to_gui('MASTER_TRANSITION_END', {})
         self.send_to_gui('MASTER_CHANGED', {
             'master_id': new_master_id
+        })
+        self.send_to_gui('LOG', {
+            'message': f"Node {new_master_id} assigned as new master"
         })
 
         logging.info(f"Assigned Node {new_master_id} as new master")

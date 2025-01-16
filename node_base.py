@@ -18,7 +18,6 @@ class Node:
         self.nodes = {}  # {node_id: (host_ip, port)}
         self.master_id = None
         self.is_running = False
-        self.election_in_progress = False
         self.last_heartbeat = {}
         self.socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.socket.bind((ip, self.port))
@@ -92,22 +91,10 @@ class Node:
             self.last_heartbeat[from_node] = time.time()
             self.master_id = from_node
 
-        elif msg_type == 'ELECTION':
-            # Only participate in election if master is gone
-            if not self.election_in_progress and self.master_id is None:
-                self.election_in_progress = True
-                if self.node_id < from_node:  # Changed to pick lowest ID
-                    self._broadcast_to_nodes('ELECTION_RESPONSE')
-                    self._start_election()
-
-        elif msg_type == 'ELECTION_RESPONSE':
-            self.election_in_progress = False
-
         elif msg_type == 'NEW_MASTER':
             new_master_id = data['master_id']
             self.master_id = new_master_id
             self.is_master = (self.node_id == new_master_id)
-            self.election_in_progress = False
             if self.is_master:
                 threading.Thread(target=self._send_heartbeat, daemon=True).start()
 
@@ -127,25 +114,7 @@ class Node:
                     self._send_to_handler('MASTER_LOST', {'lost_master_id': self.master_id})
                     # Clear master info
                     self.master_id = None
-                    # Start election
-                    self._start_election()
             time.sleep(1)
-
-    def _start_election(self):
-        if not self.election_in_progress:
-            self.election_in_progress = True
-            print(f"Node {self.node_id} starting election")
-            self._broadcast_to_nodes('ELECTION')
-            time.sleep(2)
-            
-            if self.election_in_progress:  # No lower ID responded
-                self.is_master = True
-                self.master_id = self.node_id
-                print(f"Node {self.node_id} becoming new master")
-                data = {'master_id': self.node_id}
-                self._send_to_handler('NEW_MASTER', data)
-                self._broadcast_to_nodes('NEW_MASTER', data)
-                threading.Thread(target=self._send_heartbeat, daemon=True).start()
 
     def register_node(self, ip):
         """Register another node using IP"""

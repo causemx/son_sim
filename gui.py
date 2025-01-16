@@ -32,10 +32,6 @@ logger = logging.getLogger(__name__)
 class NetworkVisualizerWidget(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
-        
-        # Add stabilization flag
-        self.stabilization_in_progress = False
-        
         self.setMinimumSize(600, 300)
         self.nodes = {}
         self.last_heartbeat = {}
@@ -43,6 +39,7 @@ class NetworkVisualizerWidget(QWidget):
         self.center_y = 3.0
         self.radius = 2.0
         self.last_positions = {}
+        self.in_transition = False  # Add this new flag
         
         # Load drone images
         self.leader_img = mpimg.imread('node_master.png')
@@ -155,6 +152,9 @@ class NetworkVisualizerWidget(QWidget):
             print(f"Position update for unknown node: {node_id}")
 
     def updateMasterStatus(self, master_id):
+        if self.in_transition:
+            return  # Skip updates during transition
+            
         # Reset all nodes to non-master first
         for node in self.nodes.values():
             node["is_master"] = False
@@ -181,6 +181,17 @@ class NetworkVisualizerWidget(QWidget):
             
             print(f"Updated node {node_id} status: {status}")
             self._redraw()
+
+    def startMasterTransition(self):
+        """Called when master transition begins"""
+        self.in_transition = True
+        print("Master transition started - pausing visualization updates")
+    
+    def endMasterTransition(self):
+        """Called when master transition ends"""
+        self.in_transition = False
+        print("Master transition ended - resuming visualization updates")
+        self._redraw()  # Perform a single redraw after transition
 
     def _redraw(self):
         self.ax.clear()
@@ -238,8 +249,8 @@ class NetworkMonitorThread(QThread):
     node_added = pyqtSignal(int, str)
     master_changed = pyqtSignal(int)
     node_removed = pyqtSignal(int)
-    stabilization_started = pyqtSignal()
-    stabilization_ended = pyqtSignal()
+    master_transition_start = pyqtSignal()
+    master_transition_end = pyqtSignal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -248,7 +259,7 @@ class NetworkMonitorThread(QThread):
         self.gui_port = 5567              # GUI's port
         self.handler_host = '192.168.1.1' # Handler's outside IP
         self.handler_port = 5566          # Handler's outside port
-
+        
         # Create and bind socket
         self.socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         try:
@@ -297,15 +308,12 @@ class NetworkMonitorThread(QThread):
         msg_type = message['type']
         data = message.get('data', {})
 
-        if msg_type == 'STABILIZATION_START':
-            self.stabilization_started.emit()
-            self.message_received.emit(data['message'])
-        elif msg_type == 'STABILIZATION_END':
-            self.stabilization_ended.emit()
-            self.message_received.emit(data['message'])
-        elif msg_type == 'LOG':
+        logger.debug(f"Received message: type={msg_type}, data={data}")
+
+        if msg_type == 'LOG':
             self.message_received.emit(data['message'])
         elif msg_type == 'NODE_ADDED':
+            logger.info(f"Adding node: IP last byte={data['ip_last_byte']}, type={data['node_type']}")
             self.node_added.emit(data['ip_last_byte'], data['node_type'])
         elif msg_type == 'NODE_STATUS':
             self.node_status_changed.emit(data['node_id'], data['status'])
@@ -313,7 +321,10 @@ class NetworkMonitorThread(QThread):
             self.master_changed.emit(data['master_id'])
         elif msg_type == "NODE_REMOVED":
             self.node_removed.emit(data['node_id'])
-
+        elif msg_type == "MASTER_TRANSITION_START":
+            self.master_transition_start.emit()
+        elif msg_type == "MASTER_TRANSITION_END":
+            self.master_transition_end.emit()
 
     def stop(self):
         self.is_running = False
@@ -426,25 +437,15 @@ class MonitorGUI(QMainWindow):
         self.monitor_thread.node_added.connect(self.network_viz.addNode)
         self.monitor_thread.master_changed.connect(self.network_viz.updateMasterStatus)
         self.monitor_thread.node_removed.connect(self.network_viz.removeNode)
+        self.monitor_thread.master_transition_start.connect(self.network_viz.startMasterTransition)
+        self.monitor_thread.master_transition_end.connect(self.network_viz.endMasterTransition)
         self.monitor_thread.start()
 
         # Start position receiver thread
         self.position_thread = PositionReceiverThread()
         self.position_thread.position_updated.connect(self.network_viz.updateNodePosition)
         self.position_thread.start()
-
-        # Connect stabilization signals
-        self.monitor_thread.stabilization_started.connect(
-            lambda: setattr(self.network_viz, 'stabilization_in_progress', True)
-        )
-        self.monitor_thread.stabilization_ended.connect(
-            self._handle_stabilization_end
-        )
-
-    def _handle_stabilization_end(self):
-        self.network_viz.stabilization_in_progress = False
-        self.network_viz._redraw()  # Force redraw after stabilization
-
+        
     def log_message(self, message):
         self.log_text.append(message)
 
