@@ -26,17 +26,21 @@ class NetworkHandler:
         
         self.is_running = False
         self.known_nodes = set()
-        self.master_id = 1
+        self.master_id = 1  # Default master is Node 1
         self.last_network_change = time.time()
         self.previous_nodes = set()
         self.stabilization_period = 15  # 15 seconds stabilization period
+        
+        # New: Track last heartbeat time for each node
+        self.last_heartbeat = {}
+        self.heartbeat_timeout = 15  # Seconds before considering a node dead
         
         # Setup socket for node communication (mesh network)
         self.node_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         try:
             self.node_socket.bind((self.mesh_host, self.mesh_port))
             self.node_socket.settimeout(0.1)
-            logging.info(f"Handler bound to mesh network: {self.mesh_host}:{self.           mesh_port}")
+            logging.info(f"Handler bound to mesh network: {self.mesh_host}:{self.mesh_port}")
         except socket.error as e:
             logging.error(f"Failed to bind mesh network socket: {e}")
             raise
@@ -46,7 +50,7 @@ class NetworkHandler:
         try:
             self.gui_socket.bind((self.outside_host, self.outside_port))
             self.gui_socket.settimeout(0.1)
-            logging.info(f"Handler bound to outside network: {self.outside_host}:{self.     outside_port}")
+            logging.info(f"Handler bound to outside network: {self.outside_host}:{self.outside_port}")
         except socket.error as e:
             logging.error(f"Failed to bind outside network socket: {e}")
             raise
@@ -144,6 +148,31 @@ class NetworkHandler:
 
         logging.info(f"Assigned Node {new_master_id} as new master")
 
+    def check_master_status(self):
+        """Monitor master node's heartbeat status"""
+        current_time = time.time()
+        
+        # Check if master's heartbeat has timed out
+        if self.master_id is not None:
+            if (self.master_id not in self.last_heartbeat or 
+                current_time - self.last_heartbeat[self.master_id] > self.heartbeat_timeout):
+                logging.info(f"Master node {self.master_id} heartbeat timeout detected")
+                
+                # Remove the lost master from known nodes
+                if self.master_id in self.known_nodes:
+                    self.known_nodes.remove(self.master_id)
+                    # Send node removal to GUI
+                    self.send_to_gui('NODE_REMOVED', {
+                        'node_id': self.master_id
+                    })
+                    
+                self.send_to_gui('LOG', {
+                    'message': f"Master node {self.master_id} lost - heartbeat timeout"
+                })
+                
+                # Assign new master
+                self.assign_new_master()
+
     def send_to_gui(self, message_type, data):
         message = {
              'type': message_type,
@@ -183,6 +212,10 @@ class NetworkHandler:
         
         logging.info(f"IN  <- Node {from_node} [{msg_type}]: {json.dumps(data, indent=2)}")
         
+        # Update heartbeat timestamp for the node
+        current_time = time.time()
+        self.last_heartbeat[from_node] = current_time
+        
         # Handle new node registration
         if from_node not in self.known_nodes:
             self.known_nodes.add(from_node)
@@ -219,34 +252,21 @@ class NetworkHandler:
                     logging.info("Master node removed - assigning new master")
                     self.assign_new_master()
         
-        elif msg_type == 'HEARTBEAT':
+        elif msg_type == 'MASTER_HEARTBEAT':
             if from_node == self.master_id:
                 self.send_to_gui('MASTER_CHANGED', {
                     'master_id': from_node
                 })
             
-        elif msg_type == 'MASTER_LOST':
-            lost_master = data['lost_master_id']
-            if lost_master == self.master_id:
-                logging.info(f"Master node {lost_master} lost - heartbeat timeout")
-                
-                # Remove the lost node from known nodes
-                if lost_master in self.known_nodes:
-                    self.known_nodes.remove(lost_master)
-                    # Send node removal to GUI
-                    self.send_to_gui('NODE_REMOVED', {
-                        'node_id': lost_master
-                    })
-                
-                self.send_to_gui('LOG', {
-                    'message': f"Master node {lost_master} lost - heartbeat timeout"
-                })
-                
-                # Assign new master
-                self.assign_new_master()
+        elif msg_type == 'NODE_HEARTBEAT':
+            # Regular node heartbeat - just update timestamp
+            pass
 
     def run(self):
         self.is_running = True
+        
+        # Start master status monitoring thread
+        threading.Thread(target=self._monitor_master, daemon=True).start()
         
         while self.is_running:
             try:
@@ -266,6 +286,12 @@ class NetworkHandler:
                 logging.error(f"Error processing message: {e}")
             
             time.sleep(0.1)  # Prevent CPU overuse
+
+    def _monitor_master(self):
+        """Thread to monitor master node status"""
+        while self.is_running:
+            self.check_master_status()
+            time.sleep(1)
 
     def start(self):
         # Start main processing thread

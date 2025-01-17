@@ -18,7 +18,6 @@ class Node:
         self.nodes = {}  # {node_id: (host_ip, port)}
         self.master_id = None
         self.is_running = False
-        self.last_heartbeat = {}
         self.socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.socket.bind((ip, self.port))
         self.is_master = False
@@ -35,12 +34,11 @@ class Node:
         # Broadcast initial message to handler
         self._send_to_handler('NODE_ADDED', {'node_id': self.node_id})
         
-        # Start heartbeat monitoring for all nodes
-        threading.Thread(target=self._monitor_heartbeat, daemon=True).start()
+        # Start heartbeat thread
+        threading.Thread(target=self._send_heartbeat, daemon=True).start()
         
         # If lowest IP (1), start as master
         if self.node_id == 1:
-            threading.Thread(target=self._send_heartbeat, daemon=True).start()
             print(f"Node {self.node_id} starting as master")
         else:
             print(f"Node {self.node_id} starting as regular node")
@@ -87,33 +85,17 @@ class Node:
         from_node = message['from']
         data = message.get('data', {})
 
-        if msg_type == 'HEARTBEAT':
-            self.last_heartbeat[from_node] = time.time()
-            self.master_id = from_node
-
-        elif msg_type == 'NEW_MASTER':
+        if msg_type == 'NEW_MASTER':
             new_master_id = data['master_id']
             self.master_id = new_master_id
             self.is_master = (self.node_id == new_master_id)
-            if self.is_master:
-                threading.Thread(target=self._send_heartbeat, daemon=True).start()
 
     def _send_heartbeat(self):
-        while self.is_running and self.is_master:
-            self._send_to_handler('HEARTBEAT')
-            self._broadcast_to_nodes('HEARTBEAT')
-            time.sleep(1)
-
-    def _monitor_heartbeat(self):
+        """Send heartbeat messages to handler"""
         while self.is_running:
-            if not self.is_master and self.master_id is not None:
-                if (self.master_id not in self.last_heartbeat or 
-                    time.time() - self.last_heartbeat[self.master_id] > 3):
-                    print(f"Node {self.node_id}: Master {self.master_id} heartbeat lost")
-                    # Notify handler about lost master
-                    self._send_to_handler('MASTER_LOST', {'lost_master_id': self.master_id})
-                    # Clear master info
-                    self.master_id = None
+            # Master sends MASTER_HEARTBEAT, regular nodes send NODE_HEARTBEAT
+            heartbeat_type = 'MASTER_HEARTBEAT' if self.is_master else 'NODE_HEARTBEAT'
+            self._send_to_handler(heartbeat_type)
             time.sleep(1)
 
     def register_node(self, ip):
