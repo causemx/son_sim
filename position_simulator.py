@@ -64,7 +64,7 @@ class PositionSimulator:
             self.socket.sendto(packed_data, ('localhost', 17500))
             print(f"Sent position update for Node {node_id}: x={pos['x']:.3f}, y={pos['y']:.3f}, z={pos['z']:.3f}")
 
-    def run(self, update_interval=0.5):
+    def run(self, update_interval=3):
         """Run the simulation with specified update interval"""
         print(f"Starting position simulation for nodes: {self.node_ids}")
         print("Press Ctrl+C to stop")
@@ -89,7 +89,7 @@ def main():
             sys.exit(1)
     else:
         # Default to nodes 1, 2, and 3
-        node_ids = [1, 2]
+        node_ids = range(1, 11)
 
     # Create and run simulator
     simulator = PositionSimulator(node_ids)

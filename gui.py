@@ -29,17 +29,15 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+
 class NetworkVisualizerWidget(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setMinimumSize(600, 300)
         self.nodes = {}
         self.last_heartbeat = {}
-        self.center_x = 3.0
-        self.center_y = 3.0
-        self.radius = 2.0
         self.last_positions = {}
-        self.in_transition = False  # Add this new flag
+        self.in_transition = False
         
         # Load drone images
         self.leader_img = mpimg.imread('node_master.png')
@@ -77,53 +75,26 @@ class NetworkVisualizerWidget(QWidget):
         self.ax.legend(handles=[leader_patch, follower_patch],
                     loc='upper right', bbox_to_anchor=(1.1, 1.1))
 
-    
     def _draw_drone(self, pos, is_master=False):
         """Helper method to draw a drone at the given position"""
         img = self.leader_img if is_master else self.follower_img
-        imagebox = OffsetImage(img, zoom=0.1)  # Adjust zoom factor as needed
+        imagebox = OffsetImage(img, zoom=0.1)
         ab = AnnotationBbox(imagebox, pos, frameon=False)
         self.ax.add_artist(ab)
 
     def addNode(self, ip_last_byte, node_type):
-        node_id = ip_last_byte  # Use last byte of IP as node ID
+        node_id = ip_last_byte
         if node_type == "MONITOR":
             return
-            
-        # Calculate position for new node using inverted triangular layout
-        num_nodes = len([n for n in self.nodes.values() if n["type"] != "MONITOR"])
-    
-        # Calculate which layer this node belongs to
-        layer = 1
-        nodes_before = 0
-        while nodes_before + layer <= num_nodes:
-            nodes_before += layer
-            layer += 1
         
-        # Calculate position within the layer
-        position_in_layer = num_nodes - nodes_before
-        total_width = (layer - 1) * 0.8  # Width between nodes in the same layer
-        
-        # Calculate x and y coordinates
-        if layer == 1:
-            x = self.center_x
-            y = self.center_y - 1.5  # Bottom of inverted triangle
-        else:
-            # Calculate x position
-            layer_start_x = self.center_x - total_width/2
-            x = layer_start_x + (total_width/(layer-1)) * position_in_layer
-            
-            # Calculate y position (each layer is 0.8 units higher)
-            y = (self.center_y - 1.5) + ((layer-1) * 0.8) 
-
-        pos = (x, y)
+        # Add node without position - position will be set by simulator
         self.nodes[node_id] = {
-            "pos": pos,
+            "pos": None,  # Position will be updated by position simulator
             "type": node_type,
             "status": "Active",
             "color": 'g',
             "ip_last_byte": ip_last_byte,
-            "is_master": node_id == 1,  # Set node 1 as master by default
+            "is_master": node_id == 1,
             "last_seen": time.time()
         }
 
@@ -131,29 +102,27 @@ class NetworkVisualizerWidget(QWidget):
         if node_id == 1:
             self.updateMasterStatus(1)
         
-        print(f"Node added: ID={node_id}, Position=({x:.2f}, {y:.2f})")
+        print(f"Node added: ID={node_id}, waiting for position from simulator")
         self._redraw()
 
     def removeNode(self, node_id):
         if node_id in self.nodes:
-            # Store the position before removing
-            self.last_positions[node_id] = self.nodes[node_id]["pos"]
+            if self.nodes[node_id]["pos"]:
+                self.last_positions[node_id] = self.nodes[node_id]["pos"]
             del self.nodes[node_id]
             self._redraw()
 
     def updateNodePosition(self, node_id, x, y):
         if node_id in self.nodes:
-            old_pos = self.nodes[node_id]["pos"]
             self.nodes[node_id]["pos"] = (x, y)
-            
-            print(f"Node {node_id} position updated: {old_pos} -> ({x:.2f}, {y:.2f})")
+            print(f"Node {node_id} position updated: ({x:.2f}, {y:.2f})")
             self._redraw()
         else:
             print(f"Position update for unknown node: {node_id}")
 
     def updateMasterStatus(self, master_id):
         if self.in_transition:
-            return  # Skip updates during transition
+            return
             
         # Reset all nodes to non-master first
         for node in self.nodes.values():
@@ -183,15 +152,13 @@ class NetworkVisualizerWidget(QWidget):
             self._redraw()
 
     def startMasterTransition(self):
-        """Called when master transition begins"""
         self.in_transition = True
         print("Master transition started - pausing visualization updates")
     
     def endMasterTransition(self):
-        """Called when master transition ends"""
         self.in_transition = False
         print("Master transition ended - resuming visualization updates")
-        self._redraw()  # Perform a single redraw after transition
+        self._redraw()
 
     def _redraw(self):
         self.ax.clear()
@@ -208,31 +175,33 @@ class NetworkVisualizerWidget(QWidget):
         self.ax.set_yticks([i/2 for i in range(13)])
         self.ax.tick_params(axis='both', which='major', labelsize=8)
 
-        # Draw connections between nodes
-        nodes = list(self.nodes.items())
-        for i in range(len(nodes)):
-            for j in range(i + 1, len(nodes)):
-                node1 = nodes[i][1]
-                node2 = nodes[j][1]
+        # Draw connections between nodes with valid positions
+        nodes_with_pos = [(id, node) for id, node in self.nodes.items() 
+                         if node["pos"] is not None]
+        
+        for i in range(len(nodes_with_pos)):
+            for j in range(i + 1, len(nodes_with_pos)):
+                node1 = nodes_with_pos[i][1]
+                node2 = nodes_with_pos[j][1]
                 self.ax.plot([node1["pos"][0], node2["pos"][0]], 
-                        [node1["pos"][1], node2["pos"][1]], 
-                        color='lightgray', zorder=1)
+                         [node1["pos"][1], node2["pos"][1]], 
+                         color='lightgray', zorder=1)
 
-        # Draw nodes using drone icons
+        # Draw nodes using drone icons (only for nodes with positions)
         for node_id, node in self.nodes.items():
-            print(f"Drawing node {node_id} at position {node['pos']}")
-            self._draw_drone(node["pos"], node["is_master"])
-            
-            # Add node label
-            status_text = "Master" if node["is_master"] else "Node"
-            self.ax.annotate(f'Node {node_id}\n({status_text})',
-                        xy=node["pos"], 
-                        xytext=(0, 20),  # Offset label above the drone
-                        textcoords='offset points',
-                        ha='center', 
-                        va='bottom',
-                        color='black', 
-                        zorder=3)
+            if node["pos"] is not None:
+                self._draw_drone(node["pos"], node["is_master"])
+                
+                # Add node label
+                status_text = "Master" if node["is_master"] else "Node"
+                self.ax.annotate(f'Node {node_id}\n({status_text})',
+                            xy=node["pos"], 
+                            xytext=(0, 20),
+                            textcoords='offset points',
+                            ha='center', 
+                            va='bottom',
+                            color='black', 
+                            zorder=3)
 
         self.ax.set_xlabel('x-axis(meter)')
         self.ax.set_ylabel('y-axis(meter)')
