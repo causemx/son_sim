@@ -28,8 +28,6 @@ class NetworkHandler:
         self.known_nodes = set()
         self.master_id = 1  # Default master is Node 1
         self.last_network_change = time.time()
-        self.previous_nodes = set()
-        self.stabilization_period = 15  # 15 seconds stabilization period
         
         # New: Track last heartbeat time for each node
         self.last_heartbeat = {}
@@ -58,24 +56,15 @@ class NetworkHandler:
         logging.info("Network handler initialized")
         logging.info(f"GUI communication configured for {self.gui_host}:{self.gui_port}")
 
-    def check_network_stable(self):
-        """Check if network has been stable for the required period"""
-        current_time = time.time()
-        
-        # Check if nodes have changed
-        if self.known_nodes != self.previous_nodes:
-            self.last_network_change = current_time
-            self.previous_nodes = self.known_nodes.copy()
-            return False
-            
-        # Check if enough time has passed since last change
-        time_since_change = current_time - self.last_network_change
-        return time_since_change >= self.stabilization_period
-
     def assign_new_master(self):
-        """Assign the node with next smallest ID as the new master after network stabilization"""
+        """Assign the node with next smallest ID that is larger than the failed master as the new master"""
         if not self.known_nodes:
             self.master_id = None
+            logging.info("No nodes available in network - stopping handler")
+            self.send_to_gui('LOG', {
+                'message': "No nodes available in network - stopping handler"
+            })
+            self.stop()
             return
 
         # Wait for network stabilization
@@ -88,27 +77,39 @@ class NetworkHandler:
         while not self.check_network_stable():
             time.sleep(1)
             
-        logging.info("Network has stabilized - assigning new master")
+        logging.info("Network has stabilized - attempting to assign new master")
         self.send_to_gui('LOG', {
-            'message': "Network has stabilized - assigning new master"
+            'message': "Network has stabilized - attempting to assign new master"
         })
 
-        # Find the next smallest ID larger than current master
+        # Get sorted list of current nodes
         current_nodes = sorted(list(self.known_nodes))
+        
+        # Find the next smallest ID that is larger than the failed master
+        new_master_id = None
+        
         if self.master_id is None:
             # If no master exists, pick the smallest ID
             new_master_id = current_nodes[0]
         else:
-            # Find the next smallest ID after the failed master
-            try:
-                # Get index of current master in sorted list
-                current_index = current_nodes.index(self.master_id)
-                # Get next ID in sequence, wrapping around to start if at end
-                next_index = (current_index + 1) % len(current_nodes)
-                new_master_id = current_nodes[next_index]
-            except ValueError:
-                # If current master not in list, take smallest ID
-                new_master_id = current_nodes[0]
+            # Find the next ID larger than the failed master
+            for node_id in current_nodes:
+                if node_id > self.master_id:
+                    new_master_id = node_id
+                    break
+        
+        # Check if we found a valid new master
+        if new_master_id is None:
+            logging.info("No eligible node found for new master - all remaining nodes have lower IDs. Stopping handler.")
+            self.send_to_gui('LOG', {
+                'message': "No eligible node found for new master - all remaining nodes have lower IDs"
+            })
+            self.send_to_gui('LOG', {
+                'message': "Handler stopping due to no eligible master nodes"
+            })
+            self.stop()
+            sys.exit(0)  # Exit cleanly
+            return
 
         self.master_id = new_master_id
         
