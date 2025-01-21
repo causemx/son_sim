@@ -228,9 +228,11 @@ class NetworkMonitorThread(QThread):
     def __init__(self, parent=None):
         super().__init__(parent)
         # Updated IP addresses for outside network communication
-        self.gui_host = '192.168.1.2'     # GUI's outside IP
+        # self.gui_host = '192.168.1.2'     # GUI's outside IP
+        self.gui_host = 'localhost'
         self.gui_port = 5567              # GUI's port
-        self.handler_host = '192.168.1.1' # Handler's outside IP
+        # self.handler_host = '192.168.1.1' # Handler's outside IP
+        self.handler_host = 'localhost'
         self.handler_port = 5566          # Handler's outside port
         
         # Create and bind socket
@@ -363,9 +365,6 @@ class MonitorGUI(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Network Monitor")
-        
-        # screen = QApplication.primaryScreen().geometry()
-        # self.setGeometry(screen)
         self.setFixedSize(800, 640)
 
         central_widget = QWidget()
@@ -373,12 +372,32 @@ class MonitorGUI(QMainWindow):
         layout = QHBoxLayout(central_widget)
         layout.setContentsMargins(10, 10, 10, 10)
 
-        # Create left panel for event log
+        # Create left panel for status and event log
         left_panel = QWidget()
         left_layout = QVBoxLayout(left_panel)
         layout.addWidget(left_panel)
 
-        # Add event log to left panel
+        # Add node status section
+        status_label = QLabel("Node Status")
+        status_label.setStyleSheet("""
+            font-weight: bold;
+            font-size: 16px;
+            padding: 5px;
+            background-color: #4CAF50;
+            color: white;
+            border-radius: 5px;
+        """)
+        self.status_text = QTextEdit()
+        self.status_text.setStyleSheet("""
+            font-size: 14px;
+            padding: 5px;
+        """)
+        self.status_text.setReadOnly(True)
+        self.status_text.setMaximumHeight(150)  # Limit height of status section
+        left_layout.addWidget(status_label)
+        left_layout.addWidget(self.status_text)
+
+        # Add event log section
         log_label = QLabel("Event Log")
         log_label.setStyleSheet("""
             font-weight: bold;
@@ -403,13 +422,16 @@ class MonitorGUI(QMainWindow):
         layout.setStretch(0, 1)  # Left panel takes 1 part
         layout.setStretch(1, 3)  # Network visualizer takes 3 parts
 
+        # Initialize node status dictionary
+        self.node_statuses = {}
+
         # Start monitor thread
         self.monitor_thread = NetworkMonitorThread(self)
         self.monitor_thread.message_received.connect(self.log_message)
-        self.monitor_thread.node_status_changed.connect(self.network_viz.updateNodeStatus)
-        self.monitor_thread.node_added.connect(self.network_viz.addNode)
-        self.monitor_thread.master_changed.connect(self.network_viz.updateMasterStatus)
-        self.monitor_thread.node_removed.connect(self.network_viz.removeNode)
+        self.monitor_thread.node_status_changed.connect(self.update_node_status)
+        self.monitor_thread.node_added.connect(self.add_node)
+        self.monitor_thread.master_changed.connect(self.update_master_status)
+        self.monitor_thread.node_removed.connect(self.remove_node)
         self.monitor_thread.master_transition_start.connect(self.network_viz.startMasterTransition)
         self.monitor_thread.master_transition_end.connect(self.network_viz.endMasterTransition)
         self.monitor_thread.start()
@@ -418,7 +440,59 @@ class MonitorGUI(QMainWindow):
         self.position_thread = PositionReceiverThread()
         self.position_thread.position_updated.connect(self.network_viz.updateNodePosition)
         self.position_thread.start()
+
+    def update_status_display(self):
+        """Update the status display text with current node information"""
+        status_text = "Current Network Nodes:\n"
+        status_text += "-" * 40 + "\n"
         
+        # Format string for consistent spacing
+        format_str = "{icon}  {ip:<16} | {role}\n"
+        
+        for node_id, status in sorted(self.node_statuses.items()):
+            icon = "👑" if status["is_master"] else "🤖"
+            ip = f"192.168.199.{node_id}"
+            role = "Master" if status["is_master"] else "Regular"
+            
+            status_text += format_str.format(
+                icon=icon,
+                ip=ip,
+                role=role
+            )
+            
+        self.status_text.setText(status_text)
+
+    def add_node(self, ip_last_byte, node_type):
+        """Handle new node addition"""
+        if node_type != "MONITOR":
+            self.node_statuses[ip_last_byte] = {
+                "is_master": ip_last_byte == 1,
+                "status": "Active"
+            }
+            self.network_viz.addNode(ip_last_byte, node_type)
+            self.update_status_display()
+
+    def update_node_status(self, node_id, status):
+        """Handle node status updates"""
+        if node_id in self.node_statuses:
+            self.node_statuses[node_id]["status"] = status
+            self.network_viz.updateNodeStatus(node_id, status)
+            self.update_status_display()
+
+    def update_master_status(self, master_id):
+        """Handle master node changes"""
+        for node_id in self.node_statuses:
+            self.node_statuses[node_id]["is_master"] = (node_id == master_id)
+        self.network_viz.updateMasterStatus(master_id)
+        self.update_status_display()
+
+    def remove_node(self, node_id):
+        """Handle node removal"""
+        if node_id in self.node_statuses:
+            del self.node_statuses[node_id]
+            self.network_viz.removeNode(node_id)
+            self.update_status_display()
+
     def log_message(self, message):
         self.log_text.append(message)
 
