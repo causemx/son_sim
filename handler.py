@@ -56,68 +56,47 @@ class NetworkHandler:
         logging.info("Network handler initialized")
         logging.info(f"GUI communication configured for {self.gui_host}:{self.gui_port}")
 
+    
     def assign_new_master(self):
-        """Assign the node with next smallest ID that is larger than the failed master as the new master"""
+        """Assign the node with next smallest ID as the new master after network stabilization"""
         if not self.known_nodes:
             self.master_id = None
-            logging.info("No nodes available in network - stopping handler")
+            logging.info("No nodes available in network")
             self.send_to_gui('LOG', {
-                'message': "No nodes available in network - stopping handler"
+                'message': "No nodes available in network"
             })
-            self.stop()
             return
 
-        # Wait for network stabilization
-        logging.info("Waiting for network stabilization...")
-        self.send_to_gui('LOG', {
-            'message': "Network master lost - waiting for network stabilization"
-        })
-        
-        # Keep checking network stability
-        while not self.check_network_stable():
-            time.sleep(1)
-            
-        logging.info("Network has stabilized - attempting to assign new master")
-        self.send_to_gui('LOG', {
-            'message': "Network has stabilized - attempting to assign new master"
-        })
-
-        # Get sorted list of current nodes
+       
+        # Find the next smallest ID larger than current master
         current_nodes = sorted(list(self.known_nodes))
         
-        # Find the next smallest ID that is larger than the failed master
         new_master_id = None
-        
+
         if self.master_id is None:
             # If no master exists, pick the smallest ID
             new_master_id = current_nodes[0]
         else:
-            # Find the next ID larger than the failed master
+            # Find the next smallest ID after the failed master
             for node_id in current_nodes:
                 if node_id > self.master_id:
                     new_master_id = node_id
                     break
-        
-        # Check if we found a valid new master
-        if new_master_id is None:
-            logging.info("No eligible node found for new master - all remaining nodes have lower IDs. Stopping handler.")
-            self.send_to_gui('LOG', {
-                'message': "No eligible node found for new master - all remaining nodes have lower IDs"
-            })
-            self.send_to_gui('LOG', {
-                'message': "Handler stopping due to no eligible master nodes"
-            })
-            self.stop()
-            sys.exit(0)  # Exit cleanly
-            return
 
+        if new_master_id is None:
+            logging.info("No eligible node found for new master")
+            self.send_to_gui('LOG', {
+                'message': "No eligible node found for new master"    
+            })
+            return
+            
         self.master_id = new_master_id
         
         # Notify GUI about transition period
         self.send_to_gui('MASTER_TRANSITION_START', {})
         
-        # Wait for 5 seconds
-        time.sleep(5)
+        # Wait for 1 seconds
+        time.sleep(1)
 
         # Notify all nodes about new master
         message = {
@@ -211,7 +190,7 @@ class NetworkHandler:
         from_node = message['from']
         data = message.get('data', {})
         
-        logging.info(f"IN  <- Node {from_node} [{msg_type}]: {json.dumps(data, indent=2)}")
+        # logging.info(f"IN  <- Node {from_node} [{msg_type}]: {json.dumps(data, indent=2)}")
         
         # Update heartbeat timestamp for the node
         current_time = time.time()

@@ -70,7 +70,7 @@ class NetworkVisualizerWidget(QWidget):
     def _create_legend(self):
         from matplotlib.patches import Patch
         leader_patch = Patch(color='r', label='Master Node')
-        follower_patch = Patch(color='g', label='Active Node')
+        follower_patch = Patch(color='b', label='Regular Node')
         
         self.ax.legend(handles=[leader_patch, follower_patch],
                     loc='upper right', bbox_to_anchor=(1.1, 1.1))
@@ -194,13 +194,17 @@ class NetworkVisualizerWidget(QWidget):
                 
                 # Add node label
                 status_text = "Master" if node["is_master"] else "Node"
-                self.ax.annotate(f'Node {node_id}\n({status_text})',
+                self.ax.annotate(f'192.168.199.{node_id}\n({status_text})',
                             xy=node["pos"], 
-                            xytext=(0, 20),
+                            xytext=(0, -25),
                             textcoords='offset points',
                             ha='center', 
-                            va='bottom',
+                            va='top',    # Vertical alignment from top of text
                             color='black', 
+                            bbox=dict(boxstyle='round,pad=0.5', 
+                                    fc='white',    # White background
+                                    ec='gray',     # Gray edge
+                                    alpha=0.8),    # Slight transparency
                             zorder=3)
 
         self.ax.set_xlabel('x-axis(meter)')
