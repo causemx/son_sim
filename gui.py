@@ -466,7 +466,7 @@ class MonitorGUI(QMainWindow):
         """Handle new node addition"""
         if node_type != "MONITOR":
             self.node_statuses[ip_last_byte] = {
-                "is_master": ip_last_byte == 1,
+                "is_master": False,  # Initialize all nodes as non-master
                 "status": "Active"
             }
             self.network_viz.addNode(ip_last_byte, node_type)

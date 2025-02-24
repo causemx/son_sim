@@ -1,3 +1,4 @@
+import statistics
 import sys
 import socket
 import json
@@ -26,12 +27,20 @@ class NetworkHandler:
         
         self.is_running = False
         self.known_nodes = set()
-        self.master_id = 1  # Default master is Node 1
+        self.master_id = None  # Initialize with no master
         self.last_network_change = time.time()
         
-        # New: Track last heartbeat time for each node
+        # Node health tracking
         self.last_heartbeat = {}
-        self.heartbeat_timeout = 15  # Seconds before considering a node dead
+        self.heartbeat_timeout = 6  # Seconds before considering a node dead
+        
+        # Initialization phase attributes
+        self.initialization_phase = True
+        self.expected_nodes = 9
+        self.node_scores = {}
+        self.join_timestamps = {}
+        self.heartbeat_consistency = {}
+        self.heartbeat_window_size = 10
         
         # Setup socket for node communication (mesh network)
         self.node_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -128,30 +137,35 @@ class NetworkHandler:
 
         logging.info(f"Assigned Node {new_master_id} as new master")
 
-    def check_master_status(self):
-        """Monitor master node's heartbeat status"""
-        current_time = time.time()
-        
-        # Check if master's heartbeat has timed out
-        if self.master_id is not None:
-            if (self.master_id not in self.last_heartbeat or 
-                current_time - self.last_heartbeat[self.master_id] > self.heartbeat_timeout):
-                logging.info(f"Master node {self.master_id} heartbeat timeout detected")
-                
-                # Remove the lost master from known nodes
-                if self.master_id in self.known_nodes:
-                    self.known_nodes.remove(self.master_id)
-                    # Send node removal to GUI
-                    self.send_to_gui('NODE_REMOVED', {
-                        'node_id': self.master_id
-                    })
+    def check_node_status(self):
+            """Monitor all nodes' heartbeat status"""
+            current_time = time.time()
+            nodes_to_remove = set()
+            
+            # Check all known nodes
+            for node_id in self.known_nodes:
+                if (node_id not in self.last_heartbeat or 
+                    current_time - self.last_heartbeat[node_id] > self.heartbeat_timeout):
+                    logging.info(f"Node {node_id} heartbeat timeout detected")
+                    nodes_to_remove.add(node_id)
                     
-                self.send_to_gui('LOG', {
-                    'message': f"Master node {self.master_id} lost - heartbeat timeout"
+                    # Send log message to GUI
+                    self.send_to_gui('LOG', {
+                        'message': f"Node {node_id} lost - heartbeat timeout"
+                    })
+            
+            # Remove lost nodes and notify GUI
+            for node_id in nodes_to_remove:
+                self.known_nodes.remove(node_id)
+                self.send_to_gui('NODE_REMOVED', {
+                    'node_id': node_id
                 })
                 
-                # Assign new master
-                self.assign_new_master()
+                # If master node was removed, assign new master
+                if node_id == self.master_id:
+                    logging.info("Master node lost - assigning new master")
+                    self.assign_new_master()
+
 
     def send_to_gui(self, message_type, data):
         message = {
@@ -185,68 +199,205 @@ class NetworkHandler:
             
         logging.info(f"Sent network state: nodes={self.known_nodes}, master={self.master_id}")
 
+    def calculate_node_score(self, node_id):
+        """Calculate node score based on multiple factors"""
+        current_time = time.time()
+        score = 0.0
+        
+        # Factor 1: Early Join Time (40% weight)
+        if node_id in self.join_timestamps:
+            join_time = self.join_timestamps[node_id]
+            time_score = 1.0 - (join_time - min(self.join_timestamps.values())) / 30.0  # Normalize to 30 sec window
+            time_score = max(0, min(1, time_score))  # Clamp between 0 and 1
+            score += 0.4 * time_score
+        
+        # Factor 2: Heartbeat Reliability (40% weight)
+        if node_id in self.heartbeat_consistency:
+            # Calculate standard deviation of heartbeat intervals
+            intervals = self.heartbeat_consistency[node_id]
+            if intervals:
+                std_dev = statistics.stdev(intervals) if len(intervals) > 1 else 0
+                consistency_score = 1.0 - (min(std_dev, 1.0))  # Lower std_dev = better score
+                score += 0.4 * consistency_score
+        
+        # Factor 3: Node ID preference (20% weight)
+        id_score = 1.0 - (node_id / self.expected_nodes)  # Lower ID = better score
+        score += 0.2 * id_score
+        
+        return score
+        
+    def update_heartbeat_consistency(self, node_id, timestamp):
+        """Update heartbeat consistency tracking for a node"""
+        if node_id not in self.heartbeat_consistency:
+            self.heartbeat_consistency[node_id] = []
+        
+        # Calculate interval from last heartbeat
+        if self.last_heartbeat.get(node_id):
+            interval = timestamp - self.last_heartbeat[node_id]
+            if len(self.heartbeat_consistency[node_id]) >= self.heartbeat_window_size:
+                self.heartbeat_consistency[node_id].pop(0)
+            self.heartbeat_consistency[node_id].append(interval)
+    
+    def select_initial_master(self):
+        """Smart master selection during initialization phase"""
+        # Calculate scores for all nodes
+        scores = {}
+        for node_id in self.known_nodes:
+            scores[node_id] = self.calculate_node_score(node_id)
+        
+        # Select node with highest score
+        if scores:
+            new_master_id = max(scores.items(), key=lambda x: x[1])[0]
+            logging.info(f"Initial master selection scores: {scores}")
+            logging.info(f"Selected Node {new_master_id} as initial master")
+            return new_master_id
+        return None
+    
+    def check_initialization_complete(self):
+        """Check if initialization phase is complete"""
+        if self.initialization_phase and len(self.known_nodes) >= self.expected_nodes:
+            logging.info("All expected nodes have joined - completing initialization")
+            
+            # Select initial master
+            new_master_id = self.select_initial_master()
+            if new_master_id:
+                self.master_id = new_master_id
+                # Notify all nodes about selected master
+                message = {
+                    'type': 'NEW_MASTER',
+                    'from': 0,
+                    'data': {'master_id': new_master_id}
+                }
+                self.broadcast_to_nodes(message)
+                
+                # Notify GUI
+                self.send_to_gui('INITIALIZATION_COMPLETE', {
+                    'master_id': new_master_id
+                })
+                self.send_to_gui('MASTER_CHANGED', {
+                    'master_id': new_master_id
+                })
+            
+            self.initialization_phase = False
+    
+    def broadcast_to_nodes(self, message):
+        """Broadcast message to all known nodes"""
+        base_ip = '.'.join(self.mesh_host.split('.')[:-1])
+        for node_id in self.known_nodes:
+            try:
+                node_ip = f"{base_ip}.{node_id}"
+                self.node_socket.sendto(
+                    json.dumps(message).encode(),
+                    (node_ip, self.mesh_port)
+                )
+            except Exception as e:
+                logging.error(f"Error broadcasting to node {node_id}: {e}")
+
     def process_node_message(self, message, addr):
+        """Process incoming messages from nodes with initialization phase handling"""
         msg_type = message['type']
         from_node = message['from']
         data = message.get('data', {})
         
-        # logging.info(f"IN  <- Node {from_node} [{msg_type}]: {json.dumps(data, indent=2)}")
-        
-        # Update heartbeat timestamp for the node
         current_time = time.time()
+        
+        # Update heartbeat tracking
         self.last_heartbeat[from_node] = current_time
+        self.update_heartbeat_consistency(from_node, current_time)
         
-        # Handle new node registration
-        if from_node not in self.known_nodes:
-            self.known_nodes.add(from_node)
-            logging.info(f"New node joined: Node {from_node} (Port {5000 + from_node})")
-            
-            # Send node addition to GUI
-            self.send_to_gui('NODE_ADDED', {
-                'ip_last_byte': from_node,
-                'node_type': 'NODE'
-            })
-            
-            # Send log message
-            self.send_to_gui('LOG', {
-                'message': f"Node {from_node} (Port {5000 + from_node}) joined network"
-            })
-            
-            # If this is Node 1, make it master immediately
-            if from_node == 1:
-                self.master_id = 1
-                self.send_to_gui('MASTER_CHANGED', {
-                    'master_id': 1
-                })
-        
-        # Handle different message types
-        if msg_type == 'NODE_SHUTDOWN':
-            if from_node in self.known_nodes:
-                self.known_nodes.remove(from_node)
-                self.send_to_gui('NODE_REMOVED', {
-                    'node_id': from_node
+        # Handle different message types during initialization phase
+        if self.initialization_phase:
+            if from_node not in self.known_nodes:
+                # New node joining during initialization
+                self.known_nodes.add(from_node)
+                self.join_timestamps[from_node] = current_time
+                
+                logging.info(f"Initialization phase: Node {from_node} joined (Total: {len(self.known_nodes)}/{self.expected_nodes})")
+                
+                # Notify GUI about new node
+                self.send_to_gui('NODE_ADDED', {
+                    'ip_last_byte': from_node,
+                    'node_type': 'NODE'
                 })
                 
-                # If master node was removed, assign new master
-                if from_node == self.master_id:
-                    logging.info("Master node removed - assigning new master")
-                    self.assign_new_master()
-        
-        elif msg_type == 'MASTER_HEARTBEAT':
-            if from_node == self.master_id:
-                self.send_to_gui('MASTER_CHANGED', {
-                    'master_id': from_node
+                self.send_to_gui('LOG', {
+                    'message': f"Initialization: Node {from_node} joined. Waiting for {self.expected_nodes - len(self.known_nodes)} more nodes..."
+                })
+                
+                # Check if all nodes have joined
+                self.check_initialization_complete()
+                
+            # During initialization, only process heartbeats and node registration
+            if msg_type not in ['NODE_HEARTBEAT', 'NODE_ADDED']:
+                return
+                
+        # Process messages after initialization phase
+        else:
+            # Handle new node registration after initialization
+            if from_node not in self.known_nodes:
+                self.known_nodes.add(from_node)
+                self.join_timestamps[from_node] = current_time
+                
+                logging.info(f"New node joined after initialization: Node {from_node}")
+                
+                # Send node addition to GUI
+                self.send_to_gui('NODE_ADDED', {
+                    'ip_last_byte': from_node,
+                    'node_type': 'NODE'
+                })
+                
+                self.send_to_gui('LOG', {
+                    'message': f"Node {from_node} (Port {5000 + from_node}) joined network"
                 })
             
-        elif msg_type == 'NODE_HEARTBEAT':
-            # Regular node heartbeat - just update timestamp
-            pass
+            # Handle different message types
+            if msg_type == 'NODE_SHUTDOWN':
+                if from_node in self.known_nodes:
+                    self.known_nodes.remove(from_node)
+                    if from_node in self.join_timestamps:
+                        del self.join_timestamps[from_node]
+                    if from_node in self.heartbeat_consistency:
+                        del self.heartbeat_consistency[from_node]
+                    
+                    self.send_to_gui('NODE_REMOVED', {
+                        'node_id': from_node
+                    })
+                    
+                    self.send_to_gui('LOG', {
+                        'message': f"Node {from_node} has left the network"
+                    })
+                    
+                    # If master node was removed, assign new master
+                    if from_node == self.master_id:
+                        logging.info("Master node removed - assigning new master")
+                        self.assign_new_master()
+            
+            elif msg_type == 'MASTER_HEARTBEAT':
+                if from_node == self.master_id:
+                    # Confirm master status to GUI
+                    self.send_to_gui('MASTER_HEARTBEAT', {
+                        'master_id': from_node,
+                        'timestamp': current_time
+                    })
+                
+            elif msg_type == 'NODE_HEARTBEAT':
+                # Regular node heartbeat - update consistency metrics
+                pass
+                
+            elif msg_type == 'MASTER_HEALTH_UPDATE':
+                # Optional: Process any health metrics from master node
+                if from_node == self.master_id:
+                    health_data = data.get('health_metrics', {})
+                    self.send_to_gui('MASTER_HEALTH', {
+                        'master_id': from_node,
+                        'health_data': health_data
+                    })
+        
+        # Log message receipt for debugging
+        # logging.debug(f"Processed message from Node {from_node}: {msg_type}")
 
     def run(self):
         self.is_running = True
-        
-        # Start master status monitoring thread
-        threading.Thread(target=self._monitor_master, daemon=True).start()
         
         while self.is_running:
             try:
@@ -267,15 +418,19 @@ class NetworkHandler:
             
             time.sleep(0.1)  # Prevent CPU overuse
 
-    def _monitor_master(self):
-        """Thread to monitor master node status"""
+    def _monitor_network(self):
+        """Thread to monitor all nodes status"""
         while self.is_running:
-            self.check_master_status()
+            self.check_node_status()
             time.sleep(1)
 
     def start(self):
         # Start main processing thread
         threading.Thread(target=self.run, daemon=True).start()
+
+        # Start network monitoring thread
+        threading.Thread(target=self._monitor_network, daemon=True).start()
+
         logging.info("Network handler started")
 
     def stop(self):

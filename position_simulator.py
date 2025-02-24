@@ -1,7 +1,5 @@
 import socket
 import time
-import math
-import random
 import sys
 import struct
 
@@ -11,42 +9,33 @@ class PositionSimulator:
         self.node_ids = node_ids
         self.node_positions = {}
         
-        # Initialize positions for each node with random positions in 0-5 range
-        for node_id in node_ids:
-            self.node_positions[node_id] = {
-                'x': random.uniform(1.0, 4.0),  # Keep away from borders
-                'y': random.uniform(1.0, 4.0),
-                'z': random.uniform(0.0, 1.0),  # Z height
-                'angle': random.uniform(0, 2 * math.pi),
-                'speed': random.uniform(0.02, 0.05)
-            }
-
-    def update_positions(self):
-        """Update positions using circular motion with random variations"""
-        for node_id in self.node_ids:
-            pos = self.node_positions[node_id]
+        # Calculate number of rows needed for inverted triangle
+        total_nodes = len(node_ids)
+        
+        # Initialize fixed positions for inverted triangle formation
+        node_index = 0
+        current_row = 0
+        base_y = 4.0  # Starting y position (top of triangle)
+        
+        while node_index < total_nodes:
+            # Calculate number of nodes in current row
+            nodes_in_row = current_row + 1
             
-            # Update angle and add some random movement
-            pos['angle'] += pos['speed']
-            if pos['angle'] > 2 * math.pi:
-                pos['angle'] -= 2 * math.pi
-                
-            # Calculate new position with some random variation
-            center_x = 2.5 + random.uniform(-0.05, 0.05)  # Center of the area
-            center_y = 2.5 + random.uniform(-0.05, 0.05)
-            radius = 1.5 + random.uniform(-0.25, 0.25)    # Orbit radius
+            # Calculate starting x position for current row to center it
+            base_x = 2.5 - (nodes_in_row - 1) * 0.5
             
-            # Update x and y positions
-            pos['x'] = center_x + radius * math.cos(pos['angle'])
-            pos['y'] = center_y + radius * math.sin(pos['angle'])
+            # Place nodes in current row
+            for i in range(nodes_in_row):
+                if node_index < total_nodes:
+                    node_id = node_ids[node_index]
+                    self.node_positions[node_id] = {
+                        'x': base_x + i,  # Horizontal spacing of 1.0
+                        'y': base_y - current_row,  # Vertical spacing of 1.0
+                        'z': 0.5  # Fixed height
+                    }
+                    node_index += 1
             
-            # Add small random movement to z
-            pos['z'] += random.uniform(-0.05, 0.05)
-            
-            # Ensure positions stay within bounds
-            pos['x'] = max(0.5, min(4.5, pos['x']))  # Keep away from borders
-            pos['y'] = max(0.5, min(4.5, pos['y']))
-            pos['z'] = max(0.0, min(1.5, pos['z']))
+            current_row += 1
 
     def send_positions(self):
         """Send current positions via UDP using struct packing"""
@@ -64,14 +53,13 @@ class PositionSimulator:
             self.socket.sendto(packed_data, ('localhost', 17500))
             print(f"Sent position update for Node {node_id}: x={pos['x']:.3f}, y={pos['y']:.3f}, z={pos['z']:.3f}")
 
-    def run(self, update_interval=3):
+    def run(self, update_interval=2):
         """Run the simulation with specified update interval"""
-        print(f"Starting position simulation for nodes: {self.node_ids}")
+        print(f"Starting fixed position simulation for nodes: {self.node_ids}")
         print("Press Ctrl+C to stop")
         
         try:
             while True:
-                self.update_positions()
                 self.send_positions()
                 time.sleep(update_interval)
         except KeyboardInterrupt:
@@ -88,8 +76,8 @@ def main():
             print("Error: Node IDs must be integers")
             sys.exit(1)
     else:
-        # Default to nodes 1, 2, and 3
-        node_ids = range(1, 11)
+        # Default to nodes 1 through 10
+        node_ids = list(range(1, 11))
 
     # Create and run simulator
     simulator = PositionSimulator(node_ids)

@@ -21,11 +21,7 @@ class Node:
         self.socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.socket.bind((ip, self.port))
         self.is_master = False
-        
-        # Node with lowest IP last byte (1) is default master
-        if self.node_id == 1:
-            self.is_master = True
-            self.master_id = self.node_id
+        self.master_id = None
             
     def start(self):
         self.is_running = True
@@ -36,12 +32,8 @@ class Node:
         
         # Start heartbeat thread
         threading.Thread(target=self._send_heartbeat, daemon=True).start()
-        
-        # If lowest IP (1), start as master
-        if self.node_id == 1:
-            print(f"Node {self.node_id} starting as master")
-        else:
-            print(f"Node {self.node_id} starting as regular node")
+        print(f"Node {self.node_id} starting in initialization phase")
+       
 
     def _send_to_handler(self, message_type, data=None):
         """Send message to handler"""
@@ -89,6 +81,10 @@ class Node:
             new_master_id = data['master_id']
             self.master_id = new_master_id
             self.is_master = (self.node_id == new_master_id)
+            if self.is_master:
+                print(f"Node {self.node_id} selected as master")
+            else:
+                print(f"Node {self.node_id} acknowledging Node {new_master_id} as master")
 
     def _send_heartbeat(self):
         """Send heartbeat messages to handler"""
