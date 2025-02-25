@@ -1,11 +1,12 @@
 import os
+import cmd
 import sys
 import argparse
 import time
 import threading
 from pymavlink import mavutil
 from datetime import datetime
-from loguru import logger 
+from loguru import logger
 
 # Configure loguru logger for console output only
 logger.remove()  # Remove default sink
@@ -68,14 +69,14 @@ class DroneController:
             self.tracker_thread = threading.Thread(target=self._status_tracker)
             self.tracker_thread.daemon = True  # Thread will close when main program exits
             self.tracker_thread.start()
-            logger.info("Status tracking started")
+            # logger.info("Status tracking started")
 
     def stop_status_tracking(self):
         """Stop the status tracking thread"""
         self.tracking = False
         if self.tracker_thread:
             self.tracker_thread.join()
-            logger.info("Status tracking stopped")
+            # logger.info("Status tracking stopped")
 
     def _status_tracker(self):
         """Background thread function to track drone status"""
@@ -91,29 +92,36 @@ class DroneController:
                     if msg_type == 'HEARTBEAT':
                         self.current_status['armed'] = msg.base_mode & mavutil.mavlink.MAV_MODE_FLAG_SAFETY_ARMED
                         self.current_status['system_status'] = mavutil.mavlink.enums['MAV_STATE'][msg.system_status].name
+                        '''
                         logger.info(f"HEARTBEAT - Armed: {self.current_status['armed']}, "
                                   f"Status: {self.current_status['system_status']}")
-
+                        '''
                     elif msg_type == 'GLOBAL_POSITION_INT':
                         self.current_status['altitude'] = msg.relative_alt / 1000  # Convert to meters
                         self.current_status['position'] = (msg.lat / 1e7, msg.lon / 1e7)  # Convert to degrees
+                        '''
                         logger.info(f"POSITION - Alt: {self.current_status['altitude']:.1f}m, "
                                   f"Lat: {self.current_status['position'][0]:.6f}, "
                                   f"Lon: {self.current_status['position'][1]:.6f}")
+                        '''
 
                     elif msg_type == 'VFR_HUD':
                         self.current_status['groundspeed'] = msg.groundspeed
                         self.current_status['heading'] = msg.heading
+                        '''
                         logger.info(f"VFR - Speed: {msg.groundspeed:.1f}m/s, "
                                   f"Heading: {msg.heading}°")
+                        '''
 
                     elif msg_type == 'GPS_RAW_INT':
                         self.current_status['gps'] = {
                             'fix_type': msg.fix_type,
                             'satellites_visible': msg.satellites_visible
                         }
+                        '''
                         logger.info(f"GPS - Fix: {msg.fix_type}, "
                                   f"Satellites: {msg.satellites_visible}")
+                        '''
 
                     elif msg_type == 'SYS_STATUS':
                         battery_remaining = msg.battery_remaining if hasattr(msg, 'battery_remaining') else None
@@ -123,10 +131,12 @@ class DroneController:
                             'voltage': voltage
                         }
                         if voltage:
+                            '''
                             logger.info(f"BATTERY - Remaining: {battery_remaining}%, "
                                       f"Voltage: {voltage/1000:.2f}V")
                         else:
                             logger.info("BATTERY - Data not available")
+                            '''
 
             except Exception as e:
                 logger.error(f"Error in status tracker: {str(e)}")
@@ -306,108 +316,156 @@ class DroneController:
 def create_parser():
     """Create argument parser for drone commands"""
     parser = argparse.ArgumentParser(description='Drone Control CLI')
-    
+
     # Create subparsers for different commands
     subparsers = parser.add_subparsers(dest='command', help='Available commands')
-    
+
     # Connect command
     connect_parser = subparsers.add_parser('connect', help='Connect to drone')
     connect_parser.add_argument('--connection', type=str, default="udp:127.0.0.1:14550",
                               help='Connection string (default: udp:127.0.0.1:14550)')
-    
+
     # Arm command
     arm_parser = subparsers.add_parser('arm', help='Arm the drone')
-    
+
     # Disarm command
     disarm_parser = subparsers.add_parser('disarm', help='Disarm the drone')
-    
+
     # Mode command
     mode_parser = subparsers.add_parser('mode', help='Set flight mode')
     mode_parser.add_argument('mode_name', type=str, help='Flight mode to set (e.g., GUIDED, AUTO, RTL)')
-    
+
     # Takeoff command
     takeoff_parser = subparsers.add_parser('takeoff', help='Take off to specified altitude')
     takeoff_parser.add_argument('altitude', type=float, help='Target altitude in meters')
-    
+
     # Throttle command
     throttle_parser = subparsers.add_parser('throttle', help='Set throttle value')
     throttle_parser.add_argument('value', type=int, help='Throttle value (0-100)')
-    
+
     # Status command
     status_parser = subparsers.add_parser('status', help='Show drone status')
     status_parser.add_argument('--duration', type=int, default=10,
                              help='Duration to show status in seconds (default: 10)')
-    
+
     return parser
 
 
-# Example usage
+class DroneShell(cmd.Cmd):
+    intro = 'Welcome to the drone control shell. Type help or ? to list commands.\n'
+    prompt = '(drone) '
+
+    def __init__(self):
+        super().__init__()
+        self.drone_controller = None
+
+    def do_connect(self, arg):
+        """
+        Connect to the drone.
+        Usage: connect [connection_string]
+        Default connection: udp:127.0.0.1:14550
+        """
+        connection_string = arg if arg else "udp:127.0.0.1:14550"
+        self.drone_controller = DroneController(connection_string)
+        if self.drone_controller.connect():
+            print(f"Successfully connected to {connection_string}")
+        else:
+            print("Failed to connect")
+            self.drone_controller = None
+
+    def do_arm(self, arg):
+        """Arm the drone"""
+        if self._check_connection():
+            if self.drone_controller.arm():
+                print("Drone armed successfully")
+
+    def do_disarm(self, arg):
+        """Disarm the drone"""
+        if self._check_connection():
+            self.drone_controller.disarm()
+
+    def do_mode(self, arg):
+        """
+        Set flight mode
+        Usage: mode <mode_name>
+        Example: mode GUIDED
+        """
+        if not arg:
+            print("Error: Please specify a flight mode")
+            return
+        if self._check_connection():
+            self.drone_controller.set_flight_mode(arg)
+
+    def do_takeoff(self, arg):
+        """
+        Take off to specified altitude
+        Usage: takeoff <altitude>
+        Example: takeoff 10
+        """
+        try:
+            altitude = float(arg)
+            if self._check_connection():
+                if self.drone_controller.arm():  # Ensure drone is armed
+                    time.sleep(1)
+                    self.drone_controller.takeoff(altitude)
+        except ValueError:
+            print("Error: Please provide a valid altitude in meters")
+
+    def do_throttle(self, arg):
+        """
+        Set throttle value (0-100)
+        Usage: throttle <value>
+        Example: throttle 50
+        """
+        try:
+            value = int(arg)
+            if self._check_connection():
+                self.drone_controller.set_throttle(value)
+        except ValueError:
+            print("Error: Please provide a valid throttle value (0-100)")
+
+    def do_status(self, arg):
+        """
+        Show current drone status
+        Usage: status [duration]
+        Example: status 5 (shows status for 5 seconds)
+        """
+        if not self._check_connection():
+            return
+
+        try:
+            duration = int(arg) if arg else 5
+            print(f"Monitoring drone status for {duration} seconds...")
+            time.sleep(duration)
+        except ValueError:
+            print("Error: Please provide a valid duration in seconds")
+
+    def do_quit(self, arg):
+        """Quit the drone control shell"""
+        if self.drone_controller:
+            self.drone_controller.cleanup()
+        print("\nGoodbye!")
+        return True
+
+    def _check_connection(self):
+        """Check if drone is connected"""
+        if not self.drone_controller:
+            print("Error: Not connected to drone. Use 'connect' first.")
+            return False
+        return True
+
+    # Shortcuts for common commands
+    do_q = do_quit
+    do_exit = do_quit
+
 def main():
-    parser = create_parser()
-    args = parser.parse_args()
-    
-    if not args.command:
-        parser.print_help()
-        return
-    
-    # Create drone controller instance
-    drone = None
-    
     try:
-        if args.command == 'connect':
-            drone = DroneController(args.connection)
-            if drone.connect():
-                print(f"Successfully connected to {args.connection}")
-                # Keep connection alive for a moment to see initial status
-                time.sleep(3)
-            else:
-                print("Failed to connect")
-                return
-        
-        elif args.command in ['arm', 'disarm', 'mode', 'takeoff', 'throttle', 'status']:
-            # For all other commands, first establish connection with default settings
-            drone = DroneController()
-            if not drone.connect():
-                print("Failed to connect to drone")
-                return
-            
-            # Process specific commands
-            if args.command == 'arm':
-                if drone.arm():
-                    print("Drone armed successfully")
-                    time.sleep(3)  # Wait to see status update
-                
-            elif args.command == 'disarm':
-                if drone.disarm():
-                    print("Drone disarmed successfully")
-                    time.sleep(3)
-                
-            elif args.command == 'mode':
-                if drone.set_flight_mode(args.mode_name):
-                    print(f"Flight mode set to {args.mode_name}")
-                    time.sleep(3)
-                
-            elif args.command == 'takeoff':
-                if drone.arm():  # Make sure drone is armed before takeoff
-                    time.sleep(2)
-                    if drone.takeoff(args.altitude):
-                        print(f"Taking off to {args.altitude}m")
-                        time.sleep(10)  # Wait to see takeoff progress
-                
-            elif args.command == 'throttle':
-                if drone.set_throttle(args.value):
-                    print(f"Throttle set to {args.value}%")
-                    time.sleep(3)
-                
-            elif args.command == 'status':
-                print(f"Monitoring drone status for {args.duration} seconds...")
-                time.sleep(args.duration)
-    
+        DroneShell().cmdloop()
     except KeyboardInterrupt:
         print("\nProgram interrupted by user")
-    finally:
-        if drone:
-            drone.cleanup()
+        if DroneShell().drone_controller:
+            DroneShell().drone_controller.cleanup()
+
 
 
 if __name__ == "__main__":

@@ -293,8 +293,40 @@ class NetworkHandler:
             except Exception as e:
                 logging.error(f"Error broadcasting to node {node_id}: {e}")
 
+    def send_drone_command(self, node_id, command, params=None):
+        """Send drone command to specific node"""
+        if node_id not in self.known_nodes:
+            logging.error(f"Cannot send command to unknown node {node_id}")
+            return False
+
+        message = {
+            'type': 'DRONE_COMMAND',
+            'from': 0,  # From handler
+            'data': {
+                'command': command,
+                'params': params or {}
+            }
+        }
+
+        try:
+            # Construct node IP from base network
+            base_ip = '.'.join(self.mesh_host.split('.')[:-1])
+            node_ip = f"{base_ip}.{node_id}"
+            
+            self.node_socket.sendto(
+                json.dumps(message).encode(),
+                (node_ip, self.mesh_port)
+            )
+            
+            logging.info(f"Sent drone command '{command}' to Node {node_id}")
+            return True
+            
+        except Exception as e:
+            logging.error(f"Error sending drone command to node {node_id}: {e}")
+            return False
+
     def process_node_message(self, message, addr):
-        """Process incoming messages from nodes with initialization phase handling"""
+        """Process incoming messages from nodes with initialization phase handling and drone command support"""
         msg_type = message['type']
         from_node = message['from']
         data = message.get('data', {})
@@ -327,74 +359,149 @@ class NetworkHandler:
                 # Check if all nodes have joined
                 self.check_initialization_complete()
                 
-            # During initialization, only process heartbeats and node registration
-            if msg_type not in ['NODE_HEARTBEAT', 'NODE_ADDED']:
+            # During initialization, only process heartbeats, node registration, and command acks
+            if msg_type not in ['NODE_HEARTBEAT', 'NODE_ADDED', 'COMMAND_ACK']:
                 return
                 
-        # Process messages after initialization phase
-        else:
-            # Handle new node registration after initialization
-            if from_node not in self.known_nodes:
-                self.known_nodes.add(from_node)
-                self.join_timestamps[from_node] = current_time
+        # Process messages after initialization phase or command acks during initialization
+        
+        # Process drone command acknowledgments (both during and after initialization)
+        if msg_type == 'COMMAND_ACK':
+            # Process drone command acknowledgment
+            command = data.get('command')
+            result = data.get('result', {})
+            
+            # Forward command result to GUI
+            self.send_to_gui('DRONE_COMMAND_RESULT', {
+                'node_id': from_node,
+                'command': command,
+                'result': result,
+                'timestamp': data.get('timestamp', current_time)
+            })
+            
+            # Log command result
+            success = result.get('success', False)
+            message_text = result.get('message', '')
+            log_level = logging.INFO if success else logging.WARNING
+            logging.log(log_level, f"Node {from_node} command '{command}' result: {message_text}")
+            
+            # Send log message to GUI
+            self.send_to_gui('LOG', {
+                'message': f"Node {from_node} - {command}: {message_text}",
+                'level': 'success' if success else 'error'
+            })
+            
+            return  # Command ack handled, return early
+        
+        # If still in initialization phase, don't process other messages yet
+        if self.initialization_phase:
+            return
+            
+        # Handle new node registration after initialization
+        if from_node not in self.known_nodes:
+            self.known_nodes.add(from_node)
+            self.join_timestamps[from_node] = current_time
+            
+            logging.info(f"New node joined after initialization: Node {from_node}")
+            
+            # Send node addition to GUI
+            self.send_to_gui('NODE_ADDED', {
+                'ip_last_byte': from_node,
+                'node_type': 'NODE'
+            })
+            
+            self.send_to_gui('LOG', {
+                'message': f"Node {from_node} (Port {5000 + from_node}) joined network"
+            })
+        
+        # Handle different message types
+        if msg_type == 'NODE_SHUTDOWN':
+            if from_node in self.known_nodes:
+                self.known_nodes.remove(from_node)
+                if from_node in self.join_timestamps:
+                    del self.join_timestamps[from_node]
+                if from_node in self.heartbeat_consistency:
+                    del self.heartbeat_consistency[from_node]
                 
-                logging.info(f"New node joined after initialization: Node {from_node}")
-                
-                # Send node addition to GUI
-                self.send_to_gui('NODE_ADDED', {
-                    'ip_last_byte': from_node,
-                    'node_type': 'NODE'
+                self.send_to_gui('NODE_REMOVED', {
+                    'node_id': from_node
                 })
                 
                 self.send_to_gui('LOG', {
-                    'message': f"Node {from_node} (Port {5000 + from_node}) joined network"
+                    'message': f"Node {from_node} has left the network"
                 })
-            
-            # Handle different message types
-            if msg_type == 'NODE_SHUTDOWN':
-                if from_node in self.known_nodes:
-                    self.known_nodes.remove(from_node)
-                    if from_node in self.join_timestamps:
-                        del self.join_timestamps[from_node]
-                    if from_node in self.heartbeat_consistency:
-                        del self.heartbeat_consistency[from_node]
-                    
-                    self.send_to_gui('NODE_REMOVED', {
-                        'node_id': from_node
-                    })
-                    
-                    self.send_to_gui('LOG', {
-                        'message': f"Node {from_node} has left the network"
-                    })
-                    
-                    # If master node was removed, assign new master
-                    if from_node == self.master_id:
-                        logging.info("Master node removed - assigning new master")
-                        self.assign_new_master()
-            
-            elif msg_type == 'MASTER_HEARTBEAT':
-                if from_node == self.master_id:
-                    # Confirm master status to GUI
-                    self.send_to_gui('MASTER_HEARTBEAT', {
-                        'master_id': from_node,
-                        'timestamp': current_time
-                    })
                 
-            elif msg_type == 'NODE_HEARTBEAT':
-                # Regular node heartbeat - update consistency metrics
-                pass
-                
-            elif msg_type == 'MASTER_HEALTH_UPDATE':
-                # Optional: Process any health metrics from master node
+                # If master node was removed, assign new master
                 if from_node == self.master_id:
-                    health_data = data.get('health_metrics', {})
-                    self.send_to_gui('MASTER_HEALTH', {
+                    logging.info("Master node removed - assigning new master")
+                    self.assign_new_master()
+        
+        elif msg_type == 'MASTER_HEARTBEAT':
+            if from_node == self.master_id:
+                # Confirm master status to GUI
+                self.send_to_gui('MASTER_HEARTBEAT', {
+                    'master_id': from_node,
+                    'timestamp': current_time
+                })
+                
+                # If drone status included in heartbeat, forward to GUI
+                if 'armed' in data or 'mode' in data or 'altitude' in data:
+                    self.send_to_gui('MASTER_DRONE_STATUS', {
                         'master_id': from_node,
-                        'health_data': health_data
+                        'drone_status': {
+                            'armed': data.get('armed', False),
+                            'mode': data.get('mode'),
+                            'altitude': data.get('altitude', 0),
+                            'timestamp': current_time
+                        }
                     })
         
-        # Log message receipt for debugging
-        # logging.debug(f"Processed message from Node {from_node}: {msg_type}")
+        elif msg_type == 'NODE_HEARTBEAT':
+            # Process regular node heartbeat
+            # If drone status included in heartbeat, forward to GUI
+            if 'armed' in data or 'mode' in data or 'altitude' in data:
+                self.send_to_gui('NODE_DRONE_STATUS', {
+                    'node_id': from_node,
+                    'drone_status': {
+                        'armed': data.get('armed', False),
+                        'mode': data.get('mode'),
+                        'altitude': data.get('altitude', 0),
+                        'timestamp': current_time
+                    }
+                })
+                
+        elif msg_type == 'MASTER_HEALTH_UPDATE':
+            # Optional: Process any health metrics from master node
+            if from_node == self.master_id:
+                health_data = data.get('health_metrics', {})
+                self.send_to_gui('MASTER_HEALTH', {
+                    'master_id': from_node,
+                    'health_data': health_data
+                })
+                
+        elif msg_type == 'DRONE_ERROR':
+            # Handle drone error reports from nodes
+            error_message = data.get('error', 'Unknown error')
+            error_code = data.get('code', 0)
+            
+            logging.error(f"Drone error from Node {from_node}: {error_message} (Code: {error_code})")
+            
+            # Forward to GUI
+            self.send_to_gui('DRONE_ERROR', {
+                'node_id': from_node,
+                'error': error_message,
+                'code': error_code,
+                'timestamp': current_time
+            })
+            
+            # Send log message to GUI
+            self.send_to_gui('LOG', {
+                'message': f"Drone error from Node {from_node}: {error_message}",
+                'level': 'error'
+            })
+                
+        # Log message receipt for debugging (optional - can be disabled for performance)
+        # logging.debug(f"Processed message from Node {from_node}: {msg_type}") 
 
     def run(self):
         self.is_running = True

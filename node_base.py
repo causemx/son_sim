@@ -3,6 +3,7 @@ import threading
 import time
 import json
 from enum import Enum
+from controller import DroneController
 
 class NodeType(Enum):
     NODE = "NODE"
@@ -22,6 +23,10 @@ class Node:
         self.socket.bind((ip, self.port))
         self.is_master = False
         self.master_id = None
+
+         # Initialize drone controller
+        self.drone_controller = DroneController(connection_string="udp:127.0.0.1:14550")
+        self.drone_connected = False
             
     def start(self):
         self.is_running = True
@@ -34,7 +39,6 @@ class Node:
         threading.Thread(target=self._send_heartbeat, daemon=True).start()
         print(f"Node {self.node_id} starting in initialization phase")
        
-
     def _send_to_handler(self, message_type, data=None):
         """Send message to handler"""
         message = {
@@ -49,6 +53,64 @@ class Node:
             )
         except Exception as e:
             print(f"Error sending to handler: {e}")
+
+    def _handle_drone_command(self, command, params=None):
+        """Handle drone commands and return result"""
+        result = {
+            'success': False,
+            'message': ''
+        }
+
+        try:
+            if command == 'connect':
+                if not self.drone_connected:
+                    success = self.drone_controller.connect()
+                    self.drone_connected = success
+                    result = {'success': success, 'message': 'Connected successfully' if success else 'Connection failed'}
+            
+            elif not self.drone_connected:
+                return {'success': False, 'message': 'Drone not connected'}
+            
+            elif command == 'arm':
+                result = {'success': self.drone_controller.arm(), 'message': 'Armed successfully'}
+            
+            elif command == 'disarm':
+                result = {'success': self.drone_controller.disarm(), 'message': 'Disarmed successfully'}
+            
+            elif command == 'takeoff':
+                if params and 'altitude' in params:
+                    altitude = float(params['altitude'])
+                    result = {
+                        'success': self.drone_controller.takeoff(altitude),
+                        'message': f'Takeoff command sent - target altitude: {altitude}m'
+                    }
+                else:
+                    result = {'success': False, 'message': 'Altitude parameter required'}
+            
+            elif command == 'set_mode':
+                if params and 'mode' in params:
+                    mode = params['mode']
+                    result = {
+                        'success': self.drone_controller.set_flight_mode(mode),
+                        'message': f'Flight mode set to {mode}'
+                    }
+                else:
+                    result = {'success': False, 'message': 'Mode parameter required'}
+            
+            elif command == 'set_throttle':
+                if params and 'value' in params:
+                    value = int(params['value'])
+                    result = {
+                        'success': self.drone_controller.set_throttle(value),
+                        'message': f'Throttle set to {value}%'
+                    }
+                else:
+                    result = {'success': False, 'message': 'Throttle value required'}
+
+        except Exception as e:
+            result = {'success': False, 'message': f'Error executing command: {str(e)}'}
+
+        return result
 
     def _broadcast_to_nodes(self, message_type, data=None):
         """Broadcast message to all known nodes"""
@@ -86,12 +148,36 @@ class Node:
             else:
                 print(f"Node {self.node_id} acknowledging Node {new_master_id} as master")
 
+        elif msg_type == 'DRONE_COMMAND':
+            command = data.get('command')
+            params = data.get('params')
+            
+            # Execute drone command and get result
+            result = self._handle_drone_command(command, params)
+            
+            # Send acknowledgment back to handler
+            self._send_to_handler('COMMAND_ACK', {
+                'command': command,
+                'result': result,
+                'timestamp': time.time()
+            })
+
     def _send_heartbeat(self):
         """Send heartbeat messages to handler"""
         while self.is_running:
             # Master sends MASTER_HEARTBEAT, regular nodes send NODE_HEARTBEAT
             heartbeat_type = 'MASTER_HEARTBEAT' if self.is_master else 'NODE_HEARTBEAT'
-            self._send_to_handler(heartbeat_type)
+            
+            # Include drone status in heartbeat if connected
+            status_data = {}
+            if self.drone_connected:
+                status_data = {
+                    'armed': self.drone_controller.is_armed,
+                    'mode': self.drone_controller.flight_mode,
+                    'altitude': self.drone_controller.altitude
+                }
+            
+            self._send_to_handler(heartbeat_type, status_data)
             time.sleep(1)
 
     def register_node(self, ip):
@@ -101,6 +187,8 @@ class Node:
 
     def stop(self):
         if self.is_running:
+            if self.drone_connected:
+                self.drone_controller.cleanup()
             self._send_to_handler('NODE_SHUTDOWN')
         self.is_running = False
         self.socket.close()
