@@ -106,11 +106,33 @@ class Node:
                     }
                 else:
                     result = {'success': False, 'message': 'Throttle value required'}
+                    
+            elif command == 'get_mode':
+                # New command to get current flight mode
+                current_mode = self.drone_controller.get_current_mode()
+                if current_mode:
+                    result = {
+                        'success': True,
+                        'message': f'Current flight mode: {current_mode}',
+                        'mode': current_mode
+                    }
+                else:
+                    result = {'success': False, 'message': 'Could not retrieve flight mode'}
+                    
+            elif command == 'get_status':
+                # Get comprehensive drone status
+                status = self.drone_controller.get_drone_status()
+                result = {
+                    'success': True,
+                    'message': 'Status retrieved successfully',
+                    'status': status
+                }
 
         except Exception as e:
             result = {'success': False, 'message': f'Error executing command: {str(e)}'}
 
         return result
+
 
     def _broadcast_to_nodes(self, message_type, data=None):
         """Broadcast message to all known nodes"""

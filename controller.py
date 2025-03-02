@@ -303,6 +303,77 @@ class DroneController:
             logger.error("Invalid throttle value (0-100)")
             return False
 
+    def get_current_mode(self):
+        """
+        Get the current flight mode of the drone
+        
+        Returns:
+            str: Current flight mode, or None if not connected
+        """
+        if not self.drone:
+            return None
+            
+        try:
+            # Request flight mode information from the drone
+            self.drone.mav.command_long_send(
+                self.drone.target_system,
+                self.drone.target_component,
+                mavutil.mavlink.MAV_CMD_REQUEST_MESSAGE,
+                0,  # Confirmation
+                mavutil.mavlink.MAVLINK_MSG_ID_HEARTBEAT,  # Message ID for heartbeat that contains mode info
+                0, 0, 0, 0, 0, 0  # Unused parameters
+            )
+            
+            # Wait for heartbeat message to get mode
+            msg = self.drone.recv_match(type='HEARTBEAT', blocking=True, timeout=1.0)
+            if msg:
+                # Convert mode to string using MAVLink mode mapping
+                custom_mode = msg.custom_mode
+                flight_mode = mavutil.mode_mapping_acm.get(custom_mode)
+                
+                # Update internal mode tracking
+                self.flight_mode = flight_mode
+                logger.info(f"Current flight mode: {flight_mode}")
+                return flight_mode
+            else:
+                logger.warning("Couldn't retrieve flight mode - no heartbeat received")
+                return self.flight_mode  # Return last known mode if available
+                
+        except Exception as e:
+            logger.error(f"Error getting flight mode: {str(e)}")
+            return self.flight_mode  # Return last known mode on error
+
+    def get_drone_status(self):
+        """
+        Get comprehensive drone status information
+        
+        Returns:
+            dict: Dictionary containing current drone status values
+        """
+        if not self.drone:
+            return {
+                'connected': False
+            }
+        
+        # Get current mode if we don't have it
+        if not self.flight_mode:
+            self.get_current_mode()
+        
+        # Compile status information
+        status = {
+            'connected': True,
+            'armed': self.is_armed,
+            'mode': self.flight_mode,
+            'altitude': self.altitude,
+        }
+        
+        # Add extended status if available
+        if hasattr(self, 'current_status'):
+            for key, value in self.current_status.items():
+                status[key] = value
+        
+        return status
+
     def cleanup(self):
         """
         Cleanup method to be called before program exit

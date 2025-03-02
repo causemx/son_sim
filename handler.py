@@ -5,6 +5,17 @@ import json
 import time
 import threading
 import logging
+import cmd
+import atexit
+import os
+
+# Add terminal reset function that will run on exit
+def reset_terminal():
+    os.system('stty echo')   # Re-enable terminal echo
+    os.system('stty sane')   # Reset terminal to sane state
+
+# Register the reset function to run when program exits
+atexit.register(reset_terminal)
 
 # Configure logging with more detailed format
 logging.basicConfig(
@@ -41,6 +52,9 @@ class NetworkHandler:
         self.join_timestamps = {}
         self.heartbeat_consistency = {}
         self.heartbeat_window_size = 10
+        
+        # Command response tracking
+        self.command_responses = {}
         
         # Setup socket for node communication (mesh network)
         self.node_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -371,6 +385,9 @@ class NetworkHandler:
             command = data.get('command')
             result = data.get('result', {})
             
+            # Store the command response
+            self.command_responses[command] = result
+            
             # Forward command result to GUI
             self.send_to_gui('DRONE_COMMAND_RESULT', {
                 'node_id': from_node,
@@ -499,9 +516,6 @@ class NetworkHandler:
                 'message': f"Drone error from Node {from_node}: {error_message}",
                 'level': 'error'
             })
-                
-        # Log message receipt for debugging (optional - can be disabled for performance)
-        # logging.debug(f"Processed message from Node {from_node}: {msg_type}") 
 
     def run(self):
         self.is_running = True
@@ -542,26 +556,307 @@ class NetworkHandler:
 
     def stop(self):
         self.is_running = False
-        self.node_socket.close()
-        self.gui_socket.close()
+        try:
+            self.node_socket.close()
+            self.gui_socket.close()
+        except Exception:
+            pass
+        # Make sure terminal is reset when stopping
+        reset_terminal()
         logging.info("Network handler stopped")
 
+
+class HandlerShell(cmd.Cmd):
+    intro = 'Welcome to the Network Handler Shell. Type help or ? to list commands.\n'
+    prompt = '(handler) '
+
+    def __init__(self, handler):
+        super().__init__()
+        self.handler = handler
+        self.last_command_node = None
+
+    def do_nodes(self, arg):
+        """
+        List all connected nodes in the network
+        """
+        if not self.handler.known_nodes:
+            print("No nodes connected to the network")
+            return
+            
+        print("\nConnected Nodes:")
+        print("-" * 40)
+        print(f"{'Node ID':<10}{'Master':<10}{'Last Heartbeat':<20}")
+        print("-" * 40)
+        
+        for node_id in sorted(self.handler.known_nodes):
+            is_master = "Yes" if node_id == self.handler.master_id else "No"
+            last_hb = time.time() - self.handler.last_heartbeat.get(node_id, 0)
+            last_hb_str = f"{last_hb:.1f}s ago"
+            
+            print(f"{node_id:<10}{is_master:<10}{last_hb_str:<20}")
+        print()
+
+    def do_select(self, arg):
+        """
+        Select a node to send commands to
+        Usage: select <node_id>
+        """
+        try:
+            node_id = int(arg)
+            if node_id in self.handler.known_nodes:
+                self.last_command_node = node_id
+                print(f"Selected Node {node_id} for commands")
+            else:
+                print(f"Error: Node {node_id} is not connected")
+        except ValueError:
+            print("Error: Please provide a valid node ID")
+
+    def do_connect(self, arg):
+        """
+        Connect to drone
+        Usage: connect [node_id]
+        If node_id is not provided, uses the last selected node
+        """
+        node_id = self._get_target_node(arg)
+        if node_id:
+            if self.handler.send_drone_command(node_id, 'connect'):
+                print(f"Connect command sent to Node {node_id}")
+                
+                # Wait for response
+                self._wait_for_command_response('connect')
+
+    def do_arm(self, arg):
+        """
+        Arm the drone
+        Usage: arm [node_id]
+        If node_id is not provided, uses the last selected node
+        """
+        node_id = self._get_target_node(arg)
+        if node_id:
+            if self.handler.send_drone_command(node_id, 'arm'):
+                print(f"Arm command sent to Node {node_id}")
+                
+                # Wait for response
+                self._wait_for_command_response('arm')
+
+    def do_disarm(self, arg):
+        """
+        Disarm the drone
+        Usage: disarm [node_id]
+        If node_id is not provided, uses the last selected node
+        """
+        node_id = self._get_target_node(arg)
+        if node_id:
+            if self.handler.send_drone_command(node_id, 'disarm'):
+                print(f"Disarm command sent to Node {node_id}")
+                
+                # Wait for response
+                self._wait_for_command_response('disarm')
+
+    def do_mode(self, arg):
+        """
+        Set flight mode
+        Usage: mode <mode_name> [node_id]
+        Example: mode GUIDED 3
+        If node_id is not provided, uses the last selected node
+        """
+        args = arg.split()
+        if not args:
+            print("Error: Please specify a flight mode")
+            return
+            
+        mode_name = args[0]
+        node_id = self._get_target_node(args[1] if len(args) > 1 else None)
+        
+        if node_id:
+            if self.handler.send_drone_command(node_id, 'set_mode', {'mode': mode_name}):
+                print(f"Set mode '{mode_name}' command sent to Node {node_id}")
+                
+                # Wait for response
+                self._wait_for_command_response('set_mode')
+
+    def do_getmode(self, arg):
+        """
+        Get current flight mode
+        Usage: getmode [node_id]
+        If node_id is not provided, uses the last selected node
+        """
+        node_id = self._get_target_node(arg)
+        if node_id:
+            if self.handler.send_drone_command(node_id, 'get_mode'):
+                print(f"Get mode command sent to Node {node_id}")
+                
+                # Wait for response
+                self._wait_for_command_response('get_mode')
+
+    def do_takeoff(self, arg):
+        """
+        Take off to specified altitude
+        Usage: takeoff <altitude> [node_id]
+        Example: takeoff 10 2
+        If node_id is not provided, uses the last selected node
+        """
+        args = arg.split()
+        if not args:
+            print("Error: Please specify an altitude")
+            return
+            
+        try:
+            altitude = float(args[0])
+            node_id = self._get_target_node(args[1] if len(args) > 1 else None)
+            
+            if node_id:
+                if self.handler.send_drone_command(node_id, 'takeoff', {'altitude': altitude}):
+                    print(f"Takeoff command sent to Node {node_id} - target altitude: {altitude}m")
+                    
+                    # Wait for response
+                    self._wait_for_command_response('takeoff')
+                    
+        except ValueError:
+            print("Error: Please provide a valid altitude in meters")
+
+    def do_throttle(self, arg):
+        """
+        Set throttle value
+        Usage: throttle <value> [node_id]
+        Example: throttle 50 1
+        If node_id is not provided, uses the last selected node
+        """
+        args = arg.split()
+        if not args:
+            print("Error: Please specify a throttle value (0-100)")
+            return
+            
+        try:
+            value = int(args[0])
+            if value < 0 or value > 100:
+                print("Error: Throttle value must be between 0 and 100")
+                return
+                
+            node_id = self._get_target_node(args[1] if len(args) > 1 else None)
+            
+            if node_id:
+                if self.handler.send_drone_command(node_id, 'set_throttle', {'value': value}):
+                    print(f"Set throttle command sent to Node {node_id} - value: {value}%")
+                    
+                    # Wait for response
+                    self._wait_for_command_response('set_throttle')
+                    
+        except ValueError:
+            print("Error: Please provide a valid throttle value (0-100)")
+
+    def do_status(self, arg):
+        """
+        Get drone status
+        Usage: status [node_id]
+        If node_id is not provided, uses the last selected node
+        """
+        node_id = self._get_target_node(arg)
+        if node_id:
+            if self.handler.send_drone_command(node_id, 'get_status'):
+                print(f"Status request sent to Node {node_id}")
+                
+                # Wait for response
+                self._wait_for_command_response('get_status')
+
+    def do_exit(self, arg):
+        """Exit the shell but keep the handler running"""
+        print("Exiting interactive shell. Handler will continue running in the background.")
+        reset_terminal()  # Make sure terminal is reset when exiting
+        return True
+        
+    def do_quit(self, arg):
+        """Quit the handler and exit the program"""
+        print("Stopping handler and exiting...")
+        self.handler.stop()
+        reset_terminal()  # Make sure terminal is reset when exiting
+        return True
+
+    def _get_target_node(self, arg):
+        """Helper to get target node for commands"""
+        if arg:
+            try:
+                node_id = int(arg)
+                if node_id in self.handler.known_nodes:
+                    return node_id
+                else:
+                    print(f"Error: Node {node_id} is not connected")
+                    return None
+            except ValueError:
+                print("Error: Please provide a valid node ID")
+                return None
+        elif self.last_command_node:
+            if self.last_command_node in self.handler.known_nodes:
+                return self.last_command_node
+            else:
+                print(f"Error: Previously selected Node {self.last_command_node} is no longer connected")
+                self.last_command_node = None
+                return None
+        else:
+            print("Error: No node selected. Use 'select <node_id>' or specify node ID with command")
+            return None
+            
+    def _wait_for_command_response(self, command, timeout=5):
+        """Wait for command response with timeout"""
+        start_time = time.time()
+        while time.time() - start_time < timeout:
+            if command in self.handler.command_responses:
+                result = self.handler.command_responses[command]
+                # Clear the response to prevent re-use
+                del self.handler.command_responses[command]
+                
+                success = result.get('success', False)
+                message = result.get('message', '')
+                
+                if success:
+                    print(f"Command successful: {message}")
+                else:
+                    print(f"Command failed: {message}")
+                
+                # If this is a status response, print detailed information
+                if command == 'get_status' and 'status' in result:
+                    status = result['status']
+                    print("\nDrone Status:")
+                    print("-" * 40)
+                    for key, value in status.items():
+                        print(f"{key}: {value}")
+                    print("-" * 40)
+                
+                return True
+            time.sleep(0.1)
+            
+        print(f"Timeout waiting for response to {command} command")
+        return False
+    
 def main():
     logging.info("Starting network handler...")
     try:
         handler = NetworkHandler()
         handler.start()
-        
+
         print("\nHandler running on two interfaces:")
         print(f"Mesh network: {handler.mesh_host}:{handler.mesh_port}")
         print(f"Outside network: {handler.outside_host}:{handler.outside_port}")
         print(f"Sending GUI updates to {handler.gui_host}:{handler.gui_port}")
-        print("\nPress Ctrl+C to stop")
+        print("\nStarting interactive shell. Type 'help' for commands.")
         
+        # Start interactive shell
+        shell = HandlerShell(handler)
+        
+        # Run the shell in a separate thread so the handler can continue running
+        shell_thread = threading.Thread(target=shell.cmdloop)
+        shell_thread.daemon = True
+        shell_thread.start()
+        
+        # Keep the main thread alive
         while True:
             time.sleep(1)
+            if not shell_thread.is_alive():
+                break
+                
     except KeyboardInterrupt:
-        handler.stop()
+        if 'handler' in locals():
+            handler.stop()
         print("\nHandler stopped")
     except Exception as e:
         logging.error(f"Error running handler: {e}")
