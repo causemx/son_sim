@@ -306,13 +306,13 @@ class DroneController:
     def get_current_mode(self):
         """
         Get the current flight mode of the drone
-        
+
         Returns:
             str: Current flight mode, or None if not connected
         """
         if not self.drone:
             return None
-            
+
         try:
             # Request flight mode information from the drone
             self.drone.mav.command_long_send(
@@ -323,14 +323,14 @@ class DroneController:
                 mavutil.mavlink.MAVLINK_MSG_ID_HEARTBEAT,  # Message ID for heartbeat that contains mode info
                 0, 0, 0, 0, 0, 0  # Unused parameters
             )
-            
+
             # Wait for heartbeat message to get mode
             msg = self.drone.recv_match(type='HEARTBEAT', blocking=True, timeout=1.0)
             if msg:
                 # Convert mode to string using MAVLink mode mapping
                 custom_mode = msg.custom_mode
                 flight_mode = mavutil.mode_mapping_acm.get(custom_mode)
-                
+
                 # Update internal mode tracking
                 self.flight_mode = flight_mode
                 logger.info(f"Current flight mode: {flight_mode}")
@@ -338,7 +338,7 @@ class DroneController:
             else:
                 logger.warning("Couldn't retrieve flight mode - no heartbeat received")
                 return self.flight_mode  # Return last known mode if available
-                
+
         except Exception as e:
             logger.error(f"Error getting flight mode: {str(e)}")
             return self.flight_mode  # Return last known mode on error
@@ -346,7 +346,7 @@ class DroneController:
     def get_drone_status(self):
         """
         Get comprehensive drone status information
-        
+
         Returns:
             dict: Dictionary containing current drone status values
         """
@@ -354,11 +354,11 @@ class DroneController:
             return {
                 'connected': False
             }
-        
+
         # Get current mode if we don't have it
         if not self.flight_mode:
             self.get_current_mode()
-        
+
         # Compile status information
         status = {
             'connected': True,
@@ -366,12 +366,12 @@ class DroneController:
             'mode': self.flight_mode,
             'altitude': self.altitude,
         }
-        
+
         # Add extended status if available
         if hasattr(self, 'current_status'):
             for key, value in self.current_status.items():
                 status[key] = value
-        
+
         return status
 
     def cleanup(self):
@@ -499,17 +499,18 @@ class DroneShell(cmd.Cmd):
         """
         Show current drone status
         Usage: status [duration]
-        Example: status 5 (shows status for 5 seconds)
+        Example: status 5 (shows status for 3 seconds)
         """
         if not self._check_connection():
             return
 
-        try:
-            duration = int(arg) if arg else 5
-            print(f"Monitoring drone status for {duration} seconds...")
-            time.sleep(duration)
-        except ValueError:
-            print("Error: Please provide a valid duration in seconds")
+        timeout = 3
+        start_time = time.time()
+        while time.time() - start_time < timeout:
+            print(f"position: {self.drone_controller.current_status['position']}")
+            time.sleep(1)
+
+        print("status monitoring ended")
 
     def do_quit(self, arg):
         """Quit the drone control shell"""

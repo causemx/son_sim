@@ -302,64 +302,16 @@ class NetworkMonitorThread(QThread):
             self.master_transition_end.emit()
 
     def stop(self):
+        logger.info("Stopping NetworkMonitorThread...")
         self.is_running = False
+        # Optional: Send a message to unblock the socket if it's waiting for data
+        try:
+            self.socket.sendto(b'', (self.gui_host, self.gui_port))
+        except Exception:
+            pass  # Ignore errors during shutdown
         self.socket.close()
+        logger.info("NetworkMonitorThread stopped")
 
-class PositionReceiverThread(QThread):
-    position_updated = pyqtSignal(int, float, float)
-    
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.is_running = False
-        self.last_positions = {}  # Dictionary to store last known positions
-
-    def positions_different(self, node_id, x, y, z):
-        """Check if the new position is different from the last known position"""
-        if node_id not in self.last_positions:
-            return True
-            
-        last_x, last_y, last_z = self.last_positions[node_id]
-        # Compare with some tolerance to handle floating point imprecision
-        tolerance = 0.0001
-        return (abs(last_x - x) > tolerance or 
-                abs(last_y - y) > tolerance or 
-                abs(last_z - z) > tolerance)
-
-    def update_last_position(self, node_id, x, y, z):
-        """Store the last known position for a node"""
-        self.last_positions[node_id] = (x, y, z)
-
-    def run(self):
-        self.is_running = True
-        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
-        sock.bind(("", 17500))
-        
-        while self.is_running:
-            try:
-                data, addr = sock.recvfrom(1024)
-                position_data = struct.unpack("ffff", data)
-
-                # Extract position data
-                node_id = int(position_data[0])
-                x, y, z = position_data[1:4]
-                
-                # Check if position has changed
-                if self.positions_different(node_id, x, y, z):
-                    logger.info(f"Position changed - Node {node_id}: X={x:.3f}, Y={y:.3f}, Z={z:.3f}")
-                    self.update_last_position(node_id, x, y, z)
-                    self.position_updated.emit(node_id, x, y)
-                else:
-                    logger.debug(f"Skipping update - No position change for Node {node_id}")
-                    
-            except Exception as e:
-                logger.error(f"Error receiving position data: {e}")
-                
-        sock.close()
-        
-    def stop(self):
-        self.is_running = False
 
 class MonitorGUI(QMainWindow):
     def __init__(self):
@@ -436,10 +388,6 @@ class MonitorGUI(QMainWindow):
         self.monitor_thread.master_transition_end.connect(self.network_viz.endMasterTransition)
         self.monitor_thread.start()
 
-        # Start position receiver thread
-        self.position_thread = PositionReceiverThread()
-        self.position_thread.position_updated.connect(self.network_viz.updateNodePosition)
-        self.position_thread.start()
 
     def update_status_display(self):
         """Update the status display text with current node information"""
@@ -498,7 +446,6 @@ class MonitorGUI(QMainWindow):
 
     def closeEvent(self, event):
         self.monitor_thread.stop()
-        self.position_thread.stop()
         event.accept()
 
 
