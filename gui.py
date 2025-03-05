@@ -2,23 +2,18 @@ from PyQt5.QtWidgets import (
     QApplication, 
     QMainWindow, 
     QWidget, 
-    QVBoxLayout, 
-    QHBoxLayout, 
-    QLabel, 
-    QTextEdit)
-from PyQt5.QtCore import pyqtSignal, QThread
-from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
-from matplotlib.figure import Figure
-import matplotlib.pyplot as plt
-import matplotlib.patches as mpatches
-from matplotlib.offsetbox import OffsetImage, AnnotationBbox
-import matplotlib.image as mpimg
+    QVBoxLayout,
+    QTextEdit,
+    QDockWidget
+)
+from PyQt5.QtCore import pyqtSignal, QThread, Qt
+from PyQt5.QtWebEngineWidgets import QWebEngineView
+import folium
+import io
 import socket
 import json
 import sys
 import time
-import math
-import struct
 import logging
 
 # Configure logging to only show console output
@@ -39,48 +34,52 @@ class NetworkVisualizerWidget(QWidget):
         self.last_positions = {}
         self.in_transition = False
         
-        # Load drone images
-        self.leader_img = mpimg.imread('node_master.png')
-        self.follower_img = mpimg.imread('node_regular.png')
-        
-        # Create the figure and canvas
-        self.figure = Figure(figsize=(6, 4))
-        self.canvas = FigureCanvas(self.figure)
-        self.ax = self.figure.add_subplot(111)
-        
-        # Set up the layout
+        # Create a layout for the widget
         layout = QVBoxLayout()
-        layout.addWidget(self.canvas)
+        
+        # Create a WebEngineView to display the Folium map
+        self.web_view = QWebEngineView()
+        layout.addWidget(self.web_view)
+        
         self.setLayout(layout)
         
-        # Configure plot
-        self.ax.set_xlim(0, 6)
-        self.ax.set_ylim(0, 6)
-        self.ax.set_aspect('equal')
-        self.ax.axis('on')
-        self.ax.grid(True)
-        
-        # Set ticks every 0.5m
-        self.ax.set_xticks([i/2 for i in range(13)])
-        self.ax.set_yticks([i/2 for i in range(13)])
-        self.ax.tick_params(axis='both', which='major', labelsize=8)
-        
-        self._create_legend()
+        # Create initial Folium map
+        self._create_map()
 
-    def _create_legend(self):
-        from matplotlib.patches import Patch
-        leader_patch = Patch(color='r', label='Master Node')
-        follower_patch = Patch(color='b', label='Regular Node')
-        
-        self.ax.legend(handles=[leader_patch, follower_patch],
-                    loc='upper right', bbox_to_anchor=(1.1, 1.1))
+    
+    def _create_map(self):
+        """Create an initial empty map without grid lines"""
+        # Center the map on the midpoint of our coordinate space (3, 3)
+        self.map = folium.Map(
+            location=[3, 3],
+            zoom_start=14,
+            tiles='CartoDB positron'  # Light map style
+        )
 
-    def _draw_drone(self, pos, is_master=False):
-        """Helper method to draw a drone at the given position"""
-        img = self.leader_img if is_master else self.follower_img
-        imagebox = OffsetImage(img, zoom=0.1)
-        ab = AnnotationBbox(imagebox, pos, frameon=False)
-        self.ax.add_artist(ab)
+        self.icons = ["glyphicon-cloud", "glyphicon-star", "glyphicon-home", "glyphicon-tree-conifer",
+         "glyphicon-tree-deciduous", "glyphicon-fire", "glyphicon-flash", "glyphicon-road",
+         "glyphicon-cutlery", "glyphicon-plane", "glyphicon-phone", "glyphicon-globe",
+         "glyphicon-heart", "glyphicon-info-sign", "glyphicon-exclamation-sign", 
+         "glyphicon-thumbs-up", "glyphicon-thumbs-down", "glyphicon-fullscreen", 
+         "glyphicon-screenshot", "glyphicon-cloud-upload", "glyphicon-cloud-download"]
+        
+        # Add legend as a custom control
+        legend_html = '''
+             <div style="position: fixed; 
+                         bottom: 50px; right: 50px; width: 150px; height: 80px; 
+                         border:2px solid grey; z-index:9999; font-size:12px;
+                         background-color: white;
+                         padding: 10px">
+                 <p><img src="https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-red.png" width="15" height="15"> Master Node</p>
+                 <p><img src="https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-blue.png" width="15" height="15"> Regular Node</p>
+             </div>
+             '''
+        self.map.get_root().html.add_child(folium.Element(legend_html))
+        
+        # Display the map
+        data = io.BytesIO()
+        self.map.save(data, close_file=False)
+        self.web_view.setHtml(data.getvalue().decode())
 
     def addNode(self, ip_last_byte, node_type):
         node_id = ip_last_byte
@@ -92,7 +91,7 @@ class NetworkVisualizerWidget(QWidget):
             "pos": None,  # Position will be updated by position simulator
             "type": node_type,
             "status": "Active",
-            "color": 'g',
+            "color": 'blue',
             "ip_last_byte": ip_last_byte,
             "is_master": node_id == 1,
             "last_seen": time.time()
@@ -114,7 +113,8 @@ class NetworkVisualizerWidget(QWidget):
 
     def updateNodePosition(self, node_id, x, y):
         if node_id in self.nodes:
-            self.nodes[node_id]["pos"] = (x, y)
+            # In Folium, we'll use [lat, lng] - but in our grid, we'll just use [y, x]
+            self.nodes[node_id]["pos"] = (y, x)
             print(f"Node {node_id} position updated: ({x:.2f}, {y:.2f})")
             self._redraw()
         else:
@@ -127,12 +127,12 @@ class NetworkVisualizerWidget(QWidget):
         # Reset all nodes to non-master first
         for node in self.nodes.values():
             node["is_master"] = False
-            node["color"] = 'g'
+            node["color"] = 'blue'
 
         # Set the new master if one is specified
         if master_id is not None and master_id in self.nodes:
             self.nodes[master_id]["is_master"] = True
-            self.nodes[master_id]["color"] = 'r'
+            self.nodes[master_id]["color"] = 'red'
             print(f"Updated master status: Node {master_id} is now master")
         else:
             print("No master node currently assigned")
@@ -143,9 +143,9 @@ class NetworkVisualizerWidget(QWidget):
         if node_id in self.nodes:
             self.nodes[node_id]["status"] = status
             if self.nodes[node_id]["is_master"]:
-                self.nodes[node_id]["color"] = 'r'
+                self.nodes[node_id]["color"] = 'red'
             else:
-                self.nodes[node_id]["color"] = 'g'
+                self.nodes[node_id]["color"] = 'blue'
             self.nodes[node_id]["last_seen"] = time.time()
             
             print(f"Updated node {node_id} status: {status}")
@@ -161,19 +161,12 @@ class NetworkVisualizerWidget(QWidget):
         self._redraw()
 
     def _redraw(self):
-        self.ax.clear()
-        
-        # Configure plot
-        self.ax.set_xlim(0, 6)
-        self.ax.set_ylim(0, 6)
-        self.ax.set_aspect('equal')
-        self.ax.axis('on')
-        self.ax.grid(True)
-        
-        # Set ticks every 0.5m
-        self.ax.set_xticks([i/2 for i in range(13)])
-        self.ax.set_yticks([i/2 for i in range(13)])
-        self.ax.tick_params(axis='both', which='major', labelsize=8)
+        # Create a new map
+        self.map = folium.Map(
+            location=[3, 3],
+            zoom_start=14,
+            tiles='CartoDB positron'
+        )
 
         # Draw connections between nodes with valid positions
         nodes_with_pos = [(id, node) for id, node in self.nodes.items() 
@@ -183,37 +176,54 @@ class NetworkVisualizerWidget(QWidget):
             for j in range(i + 1, len(nodes_with_pos)):
                 node1 = nodes_with_pos[i][1]
                 node2 = nodes_with_pos[j][1]
-                self.ax.plot([node1["pos"][0], node2["pos"][0]], 
-                         [node1["pos"][1], node2["pos"][1]], 
-                         color='lightgray', zorder=1)
+                folium.PolyLine(
+                    locations=[node1["pos"], node2["pos"]],
+                    color='gray',
+                    weight=1.5,
+                    opacity=0.6
+                ).add_to(self.map)
 
-        # Draw nodes using drone icons (only for nodes with positions)
+        # Add markers for nodes with positions
         for node_id, node in self.nodes.items():
             if node["pos"] is not None:
-                self._draw_drone(node["pos"], node["is_master"])
-                
-                # Add node label
+                # Choose icon color based on master status
+                icon_color = 'red' if node["is_master"] else 'blue'
                 status_text = "Master" if node["is_master"] else "Node"
-                self.ax.annotate(f'192.168.199.{node_id}\n({status_text})',
-                            xy=node["pos"], 
-                            xytext=(0, -25),
-                            textcoords='offset points',
-                            ha='center', 
-                            va='top',    # Vertical alignment from top of text
-                            color='black', 
-                            bbox=dict(boxstyle='round,pad=0.5', 
-                                    fc='white',    # White background
-                                    ec='gray',     # Gray edge
-                                    alpha=0.8),    # Slight transparency
-                            zorder=3)
-
-        self.ax.set_xlabel('x-axis(meter)')
-        self.ax.set_ylabel('y-axis(meter)')
-        self._create_legend()
+                
+                # Create custom popup
+                popup_html = f"""
+                <div style="width: 150px">
+                    <b>IP:</b> 192.168.199.{node_id}<br>
+                    <b>Status:</b> {status_text}<br>
+                    <b>State:</b> {node["status"]}
+                </div>
+                """
+                
+                # Add marker to map
+                folium.Marker(
+                    location=node["pos"],
+                    popup=folium.Popup(popup_html, max_width=200),
+                    tooltip=f"192.168.199.{node_id}",
+                    icon=folium.Icon(color=icon_color, icon=self.icons[3])
+                ).add_to(self.map)
         
-        # Force a canvas update
-        self.canvas.draw_idle()
-        self.canvas.flush_events()
+        # Add legend as a custom control
+        legend_html = '''
+             <div style="position: fixed; 
+                         bottom: 50px; right: 50px; width: 150px; height: 80px; 
+                         border:2px solid grey; z-index:9999; font-size:12px;
+                         background-color: white;
+                         padding: 10px">
+                 <p><img src="https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-red.png" width="15" height="15"> Master Node</p>
+                 <p><img src="https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-blue.png" width="15" height="15"> Regular Node</p>
+             </div>
+             '''
+        self.map.get_root().html.add_child(folium.Element(legend_html))
+        
+        # Display the updated map
+        data = io.BytesIO()
+        self.map.save(data, close_file=False)
+        self.web_view.setHtml(data.getvalue().decode())
 
 
 class NetworkMonitorThread(QThread):
@@ -224,6 +234,7 @@ class NetworkMonitorThread(QThread):
     node_removed = pyqtSignal(int)
     master_transition_start = pyqtSignal()
     master_transition_end = pyqtSignal()
+    node_position_updated = pyqtSignal(int, float, float)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -300,6 +311,10 @@ class NetworkMonitorThread(QThread):
             self.master_transition_start.emit()
         elif msg_type == "MASTER_TRANSITION_END":
             self.master_transition_end.emit()
+        elif msg_type == "NODE_POSITION":
+            self.node_position_updated.emit(
+                data['node_id'], data['x'], data['y']
+            )
 
     def stop(self):
         logger.info("Stopping NetworkMonitorThread...")
@@ -317,62 +332,55 @@ class MonitorGUI(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Network Monitor")
-        self.setFixedSize(800, 640)
+        self.setMinimumSize(1000, 700)
 
-        central_widget = QWidget()
-        self.setCentralWidget(central_widget)
-        layout = QHBoxLayout(central_widget)
-        layout.setContentsMargins(10, 10, 10, 10)
-
-        # Create left panel for status and event log
-        left_panel = QWidget()
-        left_layout = QVBoxLayout(left_panel)
-        layout.addWidget(left_panel)
-
-        # Add node status section
-        status_label = QLabel("Node Status")
-        status_label.setStyleSheet("""
-            font-weight: bold;
-            font-size: 16px;
+        # Create central widget with the map
+        self.network_viz = NetworkVisualizerWidget()
+        self.setCentralWidget(self.network_viz)
+        
+        # Create Event Log dock widget
+        self.event_log_dock = QDockWidget("Event Log", self)
+        self.event_log_dock.setAllowedAreas(Qt.LeftDockWidgetArea | Qt.RightDockWidgetArea)
+        self.event_log_dock.setFeatures(QDockWidget.DockWidgetFloatable | 
+                                      QDockWidget.DockWidgetMovable)
+        
+        # Create content for Event Log dock
+        event_log_widget = QWidget()
+        event_log_layout = QVBoxLayout(event_log_widget)
+        self.log_text = QTextEdit()
+        self.log_text.setReadOnly(True)
+        self.log_text.setStyleSheet("""
+            font-size: 14px;
             padding: 5px;
-            background-color: #4CAF50;
-            color: white;
-            border-radius: 5px;
         """)
+        event_log_layout.addWidget(self.log_text)
+        self.event_log_dock.setWidget(event_log_widget)
+        
+        # Create Node Status dock widget
+        self.node_status_dock = QDockWidget("Node Status", self)
+        self.node_status_dock.setAllowedAreas(Qt.LeftDockWidgetArea | Qt.RightDockWidgetArea)
+        self.node_status_dock.setFeatures(QDockWidget.DockWidgetFloatable | 
+                                        QDockWidget.DockWidgetMovable)
+        
+        # Create content for Node Status dock
+        node_status_widget = QWidget()
+        node_status_layout = QVBoxLayout(node_status_widget)
         self.status_text = QTextEdit()
+        self.status_text.setReadOnly(True)
         self.status_text.setStyleSheet("""
             font-size: 14px;
             padding: 5px;
         """)
-        self.status_text.setReadOnly(True)
-        self.status_text.setMaximumHeight(150)  # Limit height of status section
-        left_layout.addWidget(status_label)
-        left_layout.addWidget(self.status_text)
-
-        # Add event log section
-        log_label = QLabel("Event Log")
-        log_label.setStyleSheet("""
-            font-weight: bold;
-            font-size: 16px;
-            padding: 5px;
-            background-color: #fcba03;
-            border-radius: 5px;
-        """)
-        self.log_text = QTextEdit()
-        self.log_text.setStyleSheet("""
-            font-size: 16px;
-            padding: 5px;
-        """)
-        self.log_text.setReadOnly(True)
-        self.log_text.setMinimumWidth(150)
-        left_layout.addWidget(log_label)
-        left_layout.addWidget(self.log_text)
-
-        # Create network visualizer
-        self.network_viz = NetworkVisualizerWidget()
-        layout.addWidget(self.network_viz)
-        layout.setStretch(0, 1)  # Left panel takes 1 part
-        layout.setStretch(1, 3)  # Network visualizer takes 3 parts
+        node_status_layout.addWidget(self.status_text)
+        self.node_status_dock.setWidget(node_status_widget)
+        
+        # Add dock widgets to the main window
+        self.addDockWidget(Qt.LeftDockWidgetArea, self.node_status_dock)
+        self.addDockWidget(Qt.LeftDockWidgetArea, self.event_log_dock)
+        
+        # Set initial sizes for the dock widgets
+        self.resizeDocks([self.node_status_dock, self.event_log_dock], 
+                        [200, 200], Qt.Horizontal)
 
         # Initialize node status dictionary
         self.node_statuses = {}
@@ -386,8 +394,11 @@ class MonitorGUI(QMainWindow):
         self.monitor_thread.node_removed.connect(self.remove_node)
         self.monitor_thread.master_transition_start.connect(self.network_viz.startMasterTransition)
         self.monitor_thread.master_transition_end.connect(self.network_viz.endMasterTransition)
+        self.monitor_thread.node_position_updated.connect(self.network_viz.updateNodePosition)
         self.monitor_thread.start()
 
+        # Log initial message
+        self.log_message("Network Monitor started successfully")
 
     def update_status_display(self):
         """Update the status display text with current node information"""
@@ -419,6 +430,7 @@ class MonitorGUI(QMainWindow):
             }
             self.network_viz.addNode(ip_last_byte, node_type)
             self.update_status_display()
+            self.log_message(f"Node added: 192.168.199.{ip_last_byte} ({node_type})")
 
     def update_node_status(self, node_id, status):
         """Handle node status updates"""
@@ -426,6 +438,7 @@ class MonitorGUI(QMainWindow):
             self.node_statuses[node_id]["status"] = status
             self.network_viz.updateNodeStatus(node_id, status)
             self.update_status_display()
+            self.log_message(f"Node 192.168.199.{node_id} status updated: {status}")
 
     def update_master_status(self, master_id):
         """Handle master node changes"""
@@ -433,6 +446,7 @@ class MonitorGUI(QMainWindow):
             self.node_statuses[node_id]["is_master"] = (node_id == master_id)
         self.network_viz.updateMasterStatus(master_id)
         self.update_status_display()
+        self.log_message(f"Master changed to node 192.168.199.{master_id}")
 
     def remove_node(self, node_id):
         """Handle node removal"""
@@ -440,9 +454,12 @@ class MonitorGUI(QMainWindow):
             del self.node_statuses[node_id]
             self.network_viz.removeNode(node_id)
             self.update_status_display()
+            self.log_message(f"Node removed: 192.168.199.{node_id}")
 
     def log_message(self, message):
-        self.log_text.append(message)
+        """Add a message to the event log with timestamp"""
+        timestamp = time.strftime("%H:%M:%S", time.localtime())
+        self.log_text.append(f"[{timestamp}] {message}")
 
     def closeEvent(self, event):
         self.monitor_thread.stop()
