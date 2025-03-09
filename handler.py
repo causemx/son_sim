@@ -339,6 +339,29 @@ class NetworkHandler:
             logging.error(f"Error sending drone command to node {node_id}: {e}")
             return False
 
+    def get_node_status(self, node_id=None):
+        """Get status for a specific node or all nodes
+        
+        Args:
+            node_id: Optional node ID to get status for.
+                If None, returns status for all nodes.
+        
+        Returns:
+            dict: Status information for the requested node(s)
+        """
+        if not hasattr(self, 'node_statuses'):
+            return {}
+            
+        if node_id is not None:
+            # Return status for specific node
+            return self.node_statuses.get(node_id, {}).get('status', {})
+        else:
+            # Return all node statuses
+            result = {}
+            for nid, data in self.node_statuses.items():
+                result[nid] = data.get('status', {})
+            return result
+
     def process_node_message(self, message, addr):
         """Process incoming messages from nodes with initialization phase handling and drone command support"""
         msg_type = message['type']
@@ -365,6 +388,21 @@ class NetworkHandler:
                     'ip_last_byte': from_node,
                     'node_type': 'NODE'
                 })
+                
+                # Auto-connect to the drone via this node
+                success = self.send_drone_command(from_node, 'connect')
+                if success:
+                    logging.info(f"Auto-connecting to drone via Node {from_node}")
+                    self.send_to_gui('LOG', {
+                        'message': f"Auto-connecting to drone via Node {from_node}",
+                        'level': 'info'
+                    })
+                else:
+                    logging.warning(f"Failed to auto-connect to drone via Node {from_node}")
+                    self.send_to_gui('LOG', {
+                        'message': f"Failed to auto-connect to drone via Node {from_node}",
+                        'level': 'warning'
+                    })
                 
                 self.send_to_gui('LOG', {
                     'message': f"Initialization: Node {from_node} joined. Waiting for {self.expected_nodes - len(self.known_nodes)} more nodes..."
@@ -517,6 +555,86 @@ class NetworkHandler:
                 'level': 'error'
             })
 
+        elif msg_type == 'DRONE_STATUS_UPDATE':
+            # Process detailed drone status update from a node
+            status_data = data.get('status', {})
+            timestamp = data.get('timestamp', current_time)
+            
+            # Store status info for internal use
+            if not hasattr(self, 'node_statuses'):
+                self.node_statuses = {}
+            
+            # Update node status
+            self.node_statuses[from_node] = {
+                'timestamp': timestamp,
+                'status': status_data
+            }
+            
+            # Forward to GUI with properly formatted data for display
+            gui_status_data = {
+                'node_id': from_node,
+                'is_master': (from_node == self.master_id),
+                'armed': status_data.get('armed', False),
+                'flight_mode': status_data.get('mode', 'UNKNOWN'),
+                'altitude': status_data.get('altitude', 0),
+                'position': status_data.get('position', None),
+                'heading': status_data.get('heading', None),
+                'groundspeed': status_data.get('groundspeed', None),
+                'gps': status_data.get('gps', None),
+                'battery': status_data.get('battery', None),
+                'system_status': status_data.get('system_status', None),
+                'timestamp': timestamp
+            }
+            
+            self.send_to_gui('DRONE_STATUS_UPDATE', gui_status_data)
+            
+            # Only log significant changes for console clarity
+            significant_change = False
+            if from_node not in getattr(self, 'last_logged_status', {}):
+                self.last_logged_status = getattr(self, 'last_logged_status', {})
+                self.last_logged_status[from_node] = {
+                    'armed': None,
+                    'mode': None,
+                    'altitude': None,
+                    'timestamp': 0
+                }
+                significant_change = True
+            
+            # Check if important status has changed or if it's been a while since last log
+            last_log = self.last_logged_status[from_node]
+            if (status_data.get('armed') != last_log['armed'] or
+                    status_data.get('mode') != last_log['mode'] or
+                    abs(status_data.get('altitude', 0) - (last_log['altitude'] or 0)) > 5 or
+                    timestamp - last_log['timestamp'] > 10):  # Log at least every 10 seconds
+                significant_change = True
+            
+            if significant_change:
+                # Update last logged status
+                self.last_logged_status[from_node] = {
+                    'armed': status_data.get('armed'),
+                    'mode': status_data.get('mode'),
+                    'altitude': status_data.get('altitude'),
+                    'timestamp': timestamp
+                }
+                
+                # Log the status update
+                armed_status = "ARMED" if status_data.get('armed') else "DISARMED"
+                mode = status_data.get('mode', 'UNKNOWN')
+                alt = status_data.get('altitude', 0)
+                pos_str = "Unknown"
+                if status_data.get('position'):
+                    lat, lon = status_data.get('position')
+                    pos_str = f"({lat:.6f}, {lon:.6f})"
+                
+                log_message = f"Node {from_node} status: {armed_status}, Mode: {mode}, Alt: {alt:.1f}m, Pos: {pos_str}"
+                logging.info(log_message)
+                
+                # Send log message to GUI only for significant changes
+                self.send_to_gui('LOG', {
+                    'message': log_message,
+                    'level': 'info'
+                })
+
     def run(self):
         self.is_running = True
         
@@ -567,13 +685,14 @@ class NetworkHandler:
 
 
 class HandlerShell(cmd.Cmd):
-    intro = 'Welcome to the Network Handler Shell. Type help or ? to list commands.\n'
+    intro = '''Welcome to the Network Handler Shell. Type help or ? to list commands.
+    Nodes are automatically connected when they join the network.
+    '''
     prompt = '(handler) '
 
     def __init__(self, handler):
         super().__init__()
         self.handler = handler
-        self.last_command_node = None
 
     def do_nodes(self, arg):
         """
@@ -584,32 +703,26 @@ class HandlerShell(cmd.Cmd):
             return
             
         print("\nConnected Nodes:")
-        print("-" * 40)
-        print(f"{'Node ID':<10}{'Master':<10}{'Last Heartbeat':<20}")
-        print("-" * 40)
+        print("-" * 50)
+        print(f"{'Node ID':<10}{'Master':<10}{'Last Heartbeat':<20}{'Status':<10}")
+        print("-" * 50)
         
         for node_id in sorted(self.handler.known_nodes):
             is_master = "Yes" if node_id == self.handler.master_id else "No"
             last_hb = time.time() - self.handler.last_heartbeat.get(node_id, 0)
             last_hb_str = f"{last_hb:.1f}s ago"
             
-            print(f"{node_id:<10}{is_master:<10}{last_hb_str:<20}")
+            # Check if we have a drone status for this node
+            drone_connected = "Unknown"
+            if hasattr(self.handler, 'node_statuses') and node_id in self.handler.node_statuses:
+                status = self.handler.node_statuses[node_id].get('status', {})
+                if status.get('connected', False):
+                    drone_connected = "Connected"
+                else:
+                    drone_connected = "Disconnected"
+                    
+            print(f"{node_id:<10}{is_master:<10}{last_hb_str:<20}{drone_connected:<10}")
         print()
-
-    def do_select(self, arg):
-        """
-        Select a node to send commands to
-        Usage: select <node_id>
-        """
-        try:
-            node_id = int(arg)
-            if node_id in self.handler.known_nodes:
-                self.last_command_node = node_id
-                print(f"Selected Node {node_id} for commands")
-            else:
-                print(f"Error: Node {node_id} is not connected")
-        except ValueError:
-            print("Error: Please provide a valid node ID")
 
     def _broadcast_command(self, command, params=None):
         """
@@ -635,147 +748,190 @@ class HandlerShell(cmd.Cmd):
             print("Failed to broadcast command to any nodes")
             return False
 
-    def do_connect(self, arg):
+    # Remove the do_connect method since it's now automatic
+
+    def do_disconnect(self, arg):
         """
-        Connect to drone
-        Usage: connect [node_id|all]
-        If node_id is not provided, uses the last selected node
-        Use 'connect all' to connect all drones in the network
+        Disconnect from drone
+        Usage: disconnect <node_id>
+        Use 'disconnect all' to disconnect all drones in the network
         """
         if arg.lower() == 'all':
-            self._broadcast_command('connect')
+            self._broadcast_command('disconnect')
         else:
-            node_id = self._get_target_node(arg)
-            if node_id:
-                if self.handler.send_drone_command(node_id, 'connect'):
-                    print(f"Connect command sent to Node {node_id}")
-                    
-                    # Wait for response
-                    self._wait_for_command_response('connect')
+            try:
+                node_id = int(arg)
+                if node_id in self.handler.known_nodes:
+                    if self.handler.send_drone_command(node_id, 'disconnect'):
+                        print(f"Disconnect command sent to Node {node_id}")
+                        
+                        # Wait for response
+                        self._wait_for_command_response('disconnect')
+                else:
+                    print(f"Error: Node {node_id} is not connected")
+            except ValueError:
+                print("Error: Please provide a valid node ID")
+                print("Usage: disconnect <node_id> or disconnect all")
 
     def do_arm(self, arg):
         """
         Arm the drone
-        Usage: arm [node_id|all]
-        If node_id is not provided, uses the last selected node
+        Usage: arm <node_id>
         Use 'arm all' to arm all drones in the network
         """
         if arg.lower() == 'all':
             self._broadcast_command('arm')
         else:
-            node_id = self._get_target_node(arg)
-            if node_id:
-                if self.handler.send_drone_command(node_id, 'arm'):
-                    print(f"Arm command sent to Node {node_id}")
-                    
-                    # Wait for response
-                    self._wait_for_command_response('arm')
+            try:
+                node_id = int(arg)
+                if node_id in self.handler.known_nodes:
+                    if self.handler.send_drone_command(node_id, 'arm'):
+                        print(f"Arm command sent to Node {node_id}")
+                        
+                        # Wait for response
+                        self._wait_for_command_response('arm')
+                else:
+                    print(f"Error: Node {node_id} is not connected")
+            except ValueError:
+                print("Error: Please provide a valid node ID")
+                print("Usage: arm <node_id> or arm all")
 
     def do_disarm(self, arg):
         """
         Disarm the drone
-        Usage: disarm [node_id|all]
-        If node_id is not provided, uses the last selected node
+        Usage: disarm <node_id>
         Use 'disarm all' to disarm all drones in the network
         """
         if arg.lower() == 'all':
             self._broadcast_command('disarm')
         else:
-            node_id = self._get_target_node(arg)
-            if node_id:
-                if self.handler.send_drone_command(node_id, 'disarm'):
-                    print(f"Disarm command sent to Node {node_id}")
-                    
-                    # Wait for response
-                    self._wait_for_command_response('disarm')
+            try:
+                node_id = int(arg)
+                if node_id in self.handler.known_nodes:
+                    if self.handler.send_drone_command(node_id, 'disarm'):
+                        print(f"Disarm command sent to Node {node_id}")
+                        
+                        # Wait for response
+                        self._wait_for_command_response('disarm')
+                else:
+                    print(f"Error: Node {node_id} is not connected")
+            except ValueError:
+                print("Error: Please provide a valid node ID")
+                print("Usage: disarm <node_id> or disarm all")
 
     def do_mode(self, arg):
         """
         Set flight mode
-        Usage: mode <mode_name> [node_id|all]
+        Usage: mode <mode_name> <node_id>
         Example: mode GUIDED 3
         Example: mode GUIDED all
-        If node_id is not provided, uses the last selected node
         """
         args = arg.split()
-        if not args:
-            print("Error: Please specify a flight mode")
+        if len(args) < 2:
+            print("Error: Please specify both mode name and node ID")
+            print("Usage: mode <mode_name> <node_id>")
+            print("Example: mode GUIDED 3")
+            print("Example: mode GUIDED all")
             return
             
         mode_name = args[0]
-        target = args[1] if len(args) > 1 else None
+        target = args[1]
         
-        if target and target.lower() == 'all':
+        if target.lower() == 'all':
             self._broadcast_command('set_mode', {'mode': mode_name})
         else:
-            node_id = self._get_target_node(target)
-            if node_id:
-                if self.handler.send_drone_command(node_id, 'set_mode', {'mode': mode_name}):
-                    print(f"Set mode '{mode_name}' command sent to Node {node_id}")
-                    
-                    # Wait for response
-                    self._wait_for_command_response('set_mode')
+            try:
+                node_id = int(target)
+                if node_id in self.handler.known_nodes:
+                    if self.handler.send_drone_command(node_id, 'set_mode', {'mode': mode_name}):
+                        print(f"Set mode '{mode_name}' command sent to Node {node_id}")
+                        
+                        # Wait for response
+                        self._wait_for_command_response('set_mode')
+                else:
+                    print(f"Error: Node {node_id} is not connected")
+            except ValueError:
+                print("Error: Please provide a valid node ID")
+                print("Usage: mode <mode_name> <node_id>")
 
+    # Keep the rest of the methods as is...
+    
     def do_getmode(self, arg):
         """
         Get current flight mode
-        Usage: getmode [node_id|all]
-        If node_id is not provided, uses the last selected node
+        Usage: getmode <node_id>
         Use 'getmode all' to get mode from all drones
         """
         if arg.lower() == 'all':
             self._broadcast_command('get_mode')
         else:
-            node_id = self._get_target_node(arg)
-            if node_id:
-                if self.handler.send_drone_command(node_id, 'get_mode'):
-                    print(f"Get mode command sent to Node {node_id}")
-                    
-                    # Wait for response
-                    self._wait_for_command_response('get_mode')
+            try:
+                node_id = int(arg)
+                if node_id in self.handler.known_nodes:
+                    if self.handler.send_drone_command(node_id, 'get_mode'):
+                        print(f"Get mode command sent to Node {node_id}")
+                        
+                        # Wait for response
+                        self._wait_for_command_response('get_mode')
+                else:
+                    print(f"Error: Node {node_id} is not connected")
+            except ValueError:
+                print("Error: Please provide a valid node ID")
+                print("Usage: getmode <node_id> or getmode all")
 
     def do_takeoff(self, arg):
         """
         Take off to specified altitude
-        Usage: takeoff <altitude> [node_id|all]
+        Usage: takeoff <altitude> <node_id>
         Example: takeoff 10 2
-        Example: takeoff a10 all
-        If node_id is not provided, uses the last selected node
+        Example: takeoff 10 all
         """
         args = arg.split()
-        if not args:
-            print("Error: Please specify an altitude")
+        if len(args) < 2:
+            print("Error: Please specify both altitude and node ID")
+            print("Usage: takeoff <altitude> <node_id>")
+            print("Example: takeoff 10 2")
+            print("Example: takeoff 10 all")
             return
             
         try:
             altitude = float(args[0])
-            target = args[1] if len(args) > 1 else None
+            target = args[1]
             
-            if target and target.lower() == 'all':
+            if target.lower() == 'all':
                 self._broadcast_command('takeoff', {'altitude': altitude})
             else:
-                node_id = self._get_target_node(target)
-                if node_id:
-                    if self.handler.send_drone_command(node_id, 'takeoff', {'altitude': altitude}):
-                        print(f"Takeoff command sent to Node {node_id} - target altitude: {altitude}m")
-                        
-                        # Wait for response
-                        self._wait_for_command_response('takeoff')
+                try:
+                    node_id = int(target)
+                    if node_id in self.handler.known_nodes:
+                        if self.handler.send_drone_command(node_id, 'takeoff', {'altitude': altitude}):
+                            print(f"Takeoff command sent to Node {node_id} - target altitude: {altitude}m")
+                            
+                            # Wait for response
+                            self._wait_for_command_response('takeoff')
+                    else:
+                        print(f"Error: Node {node_id} is not connected")
+                except ValueError:
+                    print("Error: Please provide a valid node ID")
+                    print("Usage: takeoff <altitude> <node_id>")
                     
         except ValueError:
             print("Error: Please provide a valid altitude in meters")
+            print("Usage: takeoff <altitude> <node_id>")
 
     def do_throttle(self, arg):
         """
         Set throttle value
-        Usage: throttle <value> [node_id|all]
+        Usage: throttle <value> <node_id>
         Example: throttle 50 1
         Example: throttle 50 all
-        If node_id is not provided, uses the last selected node
         """
         args = arg.split()
-        if not args:
-            print("Error: Please specify a throttle value (0-100)")
+        if len(args) < 2:
+            print("Error: Please specify both throttle value and node ID")
+            print("Usage: throttle <value> <node_id>")
+            print("Example: throttle 50 1")
+            print("Example: throttle 50 all")
             return
             
         try:
@@ -784,45 +940,135 @@ class HandlerShell(cmd.Cmd):
                 print("Error: Throttle value must be between 0 and 100")
                 return
                 
-            target = args[1] if len(args) > 1 else None
+            target = args[1]
             
-            if target and target.lower() == 'all':
+            if target.lower() == 'all':
                 self._broadcast_command('set_throttle', {'value': value})
             else:
-                node_id = self._get_target_node(target)
-                if node_id:
-                    if self.handler.send_drone_command(node_id, 'set_throttle', {'value': value}):
-                        print(f"Set throttle command sent to Node {node_id} - value: {value}%")
-                        
-                        # Wait for response
-                        self._wait_for_command_response('set_throttle')
+                try:
+                    node_id = int(target)
+                    if node_id in self.handler.known_nodes:
+                        if self.handler.send_drone_command(node_id, 'set_throttle', {'value': value}):
+                            print(f"Set throttle command sent to Node {node_id} - value: {value}%")
+                            
+                            # Wait for response
+                            self._wait_for_command_response('set_throttle')
+                    else:
+                        print(f"Error: Node {node_id} is not connected")
+                except ValueError:
+                    print("Error: Please provide a valid node ID")
+                    print("Usage: throttle <value> <node_id>")
                     
         except ValueError:
             print("Error: Please provide a valid throttle value (0-100)")
+            print("Usage: throttle <value> <node_id>")
 
     def do_status(self, arg):
         """
         Get drone status
-        Usage: status [node_id|all]
-        If node_id is not provided, uses the last selected node
+        Usage: status <node_id>
         Use 'status all' to get status from all drones
         """
         if arg.lower() == 'all':
             self._broadcast_command('get_status')
         else:
-            node_id = self._get_target_node(arg)
-            if node_id:
-                if self.handler.send_drone_command(node_id, 'get_status'):
-                    print(f"Status request sent to Node {node_id}")
-                    
-                    # Wait for response
-                    self._wait_for_command_response('get_status')
+            try:
+                node_id = int(arg)
+                if node_id in self.handler.known_nodes:
+                    if self.handler.send_drone_command(node_id, 'get_status'):
+                        print(f"Status request sent to Node {node_id}")
+                        
+                        # Wait for response
+                        self._wait_for_command_response('get_status')
+                else:
+                    print(f"Error: Node {node_id} is not connected")
+            except ValueError:
+                print("Error: Please provide a valid node ID")
+                print("Usage: status <node_id> or status all")
+
+    def do_detailed_status(self, arg):
+        """
+        Show detailed drone status for specified node
+        Usage: detailed_status <node_id>
+        Use 'detailed_status all' to show status for all nodes
+        """
+        if arg.lower() == 'all':
+            # Get status for all nodes
+            all_statuses = self.handler.get_node_status()
+            if not all_statuses:
+                print("No node status information available")
+                return
+                
+            print("\nDetailed Status for All Nodes:")
+            print("=" * 80)
+            
+            for node_id, status in all_statuses.items():
+                self._print_detailed_status(node_id, status)
+                print("-" * 80)
+        else:
+            # Get status for specific node
+            try:
+                node_id = int(arg)
+                if node_id in self.handler.known_nodes:
+                    status = self.handler.get_node_status(node_id)
+                    if status:
+                        print(f"\nDetailed Status for Node {node_id}:")
+                        print("=" * 80)
+                        self._print_detailed_status(node_id, status)
+                        print("=" * 80)
+                    else:
+                        print(f"No status information available for Node {node_id}")
+                else:
+                    print(f"Error: Node {node_id} is not connected")
+            except ValueError:
+                print("Error: Please provide a valid node ID")
+                print("Usage: detailed_status <node_id> or detailed_status all")
+
+    def _print_detailed_status(self, node_id, status):
+        """Helper to print detailed status information"""
+        print(f"Node ID: {node_id}")
+        print(f"Connection: {'Connected' if status.get('connected', False) else 'Disconnected'}")
+        print(f"Armed: {'Yes' if status.get('armed', False) else 'No'}")
+        print(f"Flight Mode: {status.get('mode', 'Unknown')}")
+        print(f"Altitude: {status.get('altitude', 0):.1f} meters")
+        
+        position = status.get('position')
+        if position:
+            print(f"Position: Lat {position[0]:.6f}, Lon {position[1]:.6f}")
+        
+        heading = status.get('heading')
+        if heading is not None:
+            print(f"Heading: {heading}°")
+        
+        groundspeed = status.get('groundspeed')
+        if groundspeed is not None:
+            print(f"Ground Speed: {groundspeed:.1f} m/s")
+        
+        gps = status.get('gps')
+        if gps:
+            print(f"GPS: Fix Type {gps.get('fix_type', 'Unknown')}, "
+                  f"Satellites {gps.get('satellites_visible', 'Unknown')}")
+        
+        battery = status.get('battery')
+        if battery:
+            percentage = battery.get('percentage')
+            voltage = battery.get('voltage')
+            battery_str = []
+            if percentage is not None:
+                battery_str.append(f"{percentage}%")
+            if voltage is not None:
+                battery_str.append(f"{voltage/1000:.2f}V")
+            if battery_str:
+                print(f"Battery: {', '.join(battery_str)}")
+        
+        system_status = status.get('system_status')
+        if system_status:
+            print(f"System Status: {system_status}")
 
     def do_stop(self, arg):
         """
         Execute emergency stop on drones
-        Usage: stop [node_id|all]
-        If node_id is not provided, uses the last selected node
+        Usage: stop <node_id>
         Use 'stop all' to emergency stop all drones in the network
         
         Emergency stop forces drones to BRAKE mode and disarms them if possible
@@ -844,44 +1090,25 @@ class HandlerShell(cmd.Cmd):
                 print("Failed to broadcast emergency stop commands to any nodes")
         else:
             # Target specific node
-            node_id = self._get_target_node(arg)
-            if node_id:
-                print(f"Executing emergency stop on Node {node_id}...")
-                
-                # First set node to BRAKE mode
-                if self.handler.send_drone_command(node_id, 'set_mode', {'mode': 'BRAKE'}):
-                    print(f"BRAKE mode command sent to Node {node_id}")
-                    self._wait_for_command_response('set_mode')
-
-                    print(f"Emergency stop sequence completed for Node {node_id}")
-                else:
-                    print(f"Failed to send emergency stop commands to Node {node_id}")
-        
-
-    def _get_target_node(self, arg):
-        """Helper to get target node for commands"""
-        if arg:
             try:
                 node_id = int(arg)
                 if node_id in self.handler.known_nodes:
-                    return node_id
+                    print(f"Executing emergency stop on Node {node_id}...")
+                    
+                    # First set node to BRAKE mode
+                    if self.handler.send_drone_command(node_id, 'set_mode', {'mode': 'BRAKE'}):
+                        print(f"BRAKE mode command sent to Node {node_id}")
+                        self._wait_for_command_response('set_mode')
+
+                        print(f"Emergency stop sequence completed for Node {node_id}")
+                    else:
+                        print(f"Failed to send emergency stop commands to Node {node_id}")
                 else:
                     print(f"Error: Node {node_id} is not connected")
-                    return None
             except ValueError:
                 print("Error: Please provide a valid node ID")
-                return None
-        elif self.last_command_node:
-            if self.last_command_node in self.handler.known_nodes:
-                return self.last_command_node
-            else:
-                print(f"Error: Previously selected Node {self.last_command_node} is no longer connected")
-                self.last_command_node = None
-                return None
-        else:
-            print("Error: No node selected. Use 'select <node_id>' or specify node ID with command")
-            return None
-            
+                print("Usage: stop <node_id> or stop all")
+
     def _wait_for_command_response(self, command, timeout=5):
         """Wait for command response with timeout"""
         start_time = time.time()

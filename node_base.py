@@ -25,7 +25,7 @@ class Node:
         self.master_id = None
 
          # Initialize drone controller
-        self.drone_controller = DroneController(connection_string="udp:127.0.0.1:14550")
+        self.drone_controller = DroneController(connection_string="udp:127.0.0.1:14650")
         self.drone_connected = False
             
     def start(self):
@@ -67,6 +67,10 @@ class Node:
                     success = self.drone_controller.connect()
                     self.drone_connected = success
                     result = {'success': success, 'message': 'Connected successfully' if success else 'Connection failed'}
+                    
+                    # Start status reporting if connection successful
+                    if success:
+                        self._start_status_reporting()
             
             elif not self.drone_connected:
                 return {'success': False, 'message': 'Drone not connected'}
@@ -76,6 +80,10 @@ class Node:
             
             elif command == 'disarm':
                 result = {'success': self.drone_controller.disarm(), 'message': 'Disarmed successfully'}
+                
+                # Stop status reporting if drone is disarmed
+                if result['success']:
+                    self._stop_status_reporting()
             
             elif command == 'takeoff':
                 if params and 'altitude' in params:
@@ -108,7 +116,7 @@ class Node:
                     result = {'success': False, 'message': 'Throttle value required'}
                     
             elif command == 'get_mode':
-                # New command to get current flight mode
+                # Command to get current flight mode
                 current_mode = self.drone_controller.get_current_mode()
                 if current_mode:
                     result = {
@@ -127,6 +135,16 @@ class Node:
                     'message': 'Status retrieved successfully',
                     'status': status
                 }
+            
+            elif command == 'disconnect':
+                # Add a disconnect command to stop status reporting
+                if self.drone_connected:
+                    self._stop_status_reporting()
+                    self.drone_controller.cleanup()
+                    self.drone_connected = False
+                    result = {'success': True, 'message': 'Disconnected successfully'}
+                else:
+                    result = {'success': False, 'message': 'Drone not connected'}
 
         except Exception as e:
             result = {'success': False, 'message': f'Error executing command: {str(e)}'}
@@ -134,6 +152,42 @@ class Node:
         return result
 
 
+    def _start_status_reporting(self):
+        """Start a thread to continuously send drone status to handler"""
+        if not hasattr(self, 'status_reporting') or not self.status_reporting:
+            self.status_reporting = True
+            self.status_thread = threading.Thread(target=self._status_reporter, daemon=True)
+            self.status_thread.start()
+            print(f"Node {self.node_id}: Started status reporting")
+
+    def _stop_status_reporting(self):
+        """Stop the status reporting thread"""
+        if hasattr(self, 'status_reporting') and self.status_reporting:
+            self.status_reporting = False
+            if hasattr(self, 'status_thread'):
+                self.status_thread.join(timeout=1.0)
+            print(f"Node {self.node_id}: Stopped status reporting")
+
+    def _status_reporter(self):
+        """Thread function to continuously report drone status to handler"""
+        while self.status_reporting and self.drone_connected:
+            try:
+                # Get comprehensive drone status
+                status = self.drone_controller.get_drone_status()
+                
+                # Send status to handler
+                self._send_to_handler('DRONE_STATUS_UPDATE', {
+                    'status': status,
+                    'timestamp': time.time()
+                })
+                
+                # Wait for next report interval
+                time.sleep(1)  # Report every 1 seconds
+            except Exception as e:
+                print(f"Error in status reporter: {e}")
+                time.sleep(1)  # Prevent tight loop in case of errors
+
+    # TODO: Remove it because it's redundant
     def _broadcast_to_nodes(self, message_type, data=None):
         """Broadcast message to all known nodes"""
         for node_id, (host, port) in self.nodes.items():
@@ -210,6 +264,7 @@ class Node:
     def stop(self):
         if self.is_running:
             if self.drone_connected:
+                self._stop_status_reporting()
                 self.drone_controller.cleanup()
             self._send_to_handler('NODE_SHUTDOWN')
         self.is_running = False
