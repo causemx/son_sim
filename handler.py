@@ -47,7 +47,7 @@ class NetworkHandler:
         
         # Initialization phase attributes
         self.initialization_phase = True
-        self.expected_nodes = 9
+        self.expected_nodes = 1
         self.node_scores = {}
         self.join_timestamps = {}
         self.heartbeat_consistency = {}
@@ -389,21 +389,6 @@ class NetworkHandler:
                     'node_type': 'NODE'
                 })
                 
-                # Auto-connect to the drone via this node
-                success = self.send_drone_command(from_node, 'connect')
-                if success:
-                    logging.info(f"Auto-connecting to drone via Node {from_node}")
-                    self.send_to_gui('LOG', {
-                        'message': f"Auto-connecting to drone via Node {from_node}",
-                        'level': 'info'
-                    })
-                else:
-                    logging.warning(f"Failed to auto-connect to drone via Node {from_node}")
-                    self.send_to_gui('LOG', {
-                        'message': f"Failed to auto-connect to drone via Node {from_node}",
-                        'level': 'warning'
-                    })
-                
                 self.send_to_gui('LOG', {
                     'message': f"Initialization: Node {from_node} joined. Waiting for {self.expected_nodes - len(self.known_nodes)} more nodes..."
                 })
@@ -627,7 +612,7 @@ class NetworkHandler:
                     pos_str = f"({lat:.6f}, {lon:.6f})"
                 
                 log_message = f"Node {from_node} status: {armed_status}, Mode: {mode}, Alt: {alt:.1f}m, Pos: {pos_str}"
-                logging.info(log_message)
+                # logging.info(log_message)
                 
                 # Send log message to GUI only for significant changes
                 self.send_to_gui('LOG', {
@@ -685,14 +670,13 @@ class NetworkHandler:
 
 
 class HandlerShell(cmd.Cmd):
-    intro = '''Welcome to the Network Handler Shell. Type help or ? to list commands.
-    Nodes are automatically connected when they join the network.
-    '''
+    intro = 'Welcome to the Network Handler Shell. Type help or ? to list commands.\n'
     prompt = '(handler) '
 
     def __init__(self, handler):
         super().__init__()
         self.handler = handler
+        # Remove last_command_node since we'll use node_id directly with each command
 
     def do_nodes(self, arg):
         """
@@ -703,26 +687,18 @@ class HandlerShell(cmd.Cmd):
             return
             
         print("\nConnected Nodes:")
-        print("-" * 50)
-        print(f"{'Node ID':<10}{'Master':<10}{'Last Heartbeat':<20}{'Status':<10}")
-        print("-" * 50)
+        print("-" * 40)
+        print(f"{'Node ID':<10}{'Master':<10}{'Last Heartbeat':<20}")
+        print("-" * 40)
         
         for node_id in sorted(self.handler.known_nodes):
             is_master = "Yes" if node_id == self.handler.master_id else "No"
             last_hb = time.time() - self.handler.last_heartbeat.get(node_id, 0)
             last_hb_str = f"{last_hb:.1f}s ago"
             
-            # Check if we have a drone status for this node
-            drone_connected = "Unknown"
-            if hasattr(self.handler, 'node_statuses') and node_id in self.handler.node_statuses:
-                status = self.handler.node_statuses[node_id].get('status', {})
-                if status.get('connected', False):
-                    drone_connected = "Connected"
-                else:
-                    drone_connected = "Disconnected"
-                    
-            print(f"{node_id:<10}{is_master:<10}{last_hb_str:<20}{drone_connected:<10}")
+            print(f"{node_id:<10}{is_master:<10}{last_hb_str:<20}")
         print()
+
 
     def _broadcast_command(self, command, params=None):
         """
@@ -748,30 +724,28 @@ class HandlerShell(cmd.Cmd):
             print("Failed to broadcast command to any nodes")
             return False
 
-    # Remove the do_connect method since it's now automatic
-
-    def do_disconnect(self, arg):
+    def do_connect(self, arg):
         """
-        Disconnect from drone
-        Usage: disconnect <node_id>
-        Use 'disconnect all' to disconnect all drones in the network
+        Connect to drone
+        Usage: connect <node_id>
+        Use 'connect all' to connect all drones in the network
         """
         if arg.lower() == 'all':
-            self._broadcast_command('disconnect')
+            self._broadcast_command('connect')
         else:
             try:
                 node_id = int(arg)
                 if node_id in self.handler.known_nodes:
-                    if self.handler.send_drone_command(node_id, 'disconnect'):
-                        print(f"Disconnect command sent to Node {node_id}")
+                    if self.handler.send_drone_command(node_id, 'connect'):
+                        print(f"Connect command sent to Node {node_id}")
                         
                         # Wait for response
-                        self._wait_for_command_response('disconnect')
+                        self._wait_for_command_response('connect')
                 else:
                     print(f"Error: Node {node_id} is not connected")
             except ValueError:
                 print("Error: Please provide a valid node ID")
-                print("Usage: disconnect <node_id> or disconnect all")
+                print("Usage: connect <node_id> or connect all")
 
     def do_arm(self, arg):
         """
@@ -854,8 +828,6 @@ class HandlerShell(cmd.Cmd):
                 print("Error: Please provide a valid node ID")
                 print("Usage: mode <mode_name> <node_id>")
 
-    # Keep the rest of the methods as is...
-    
     def do_getmode(self, arg):
         """
         Get current flight mode
@@ -1023,47 +995,6 @@ class HandlerShell(cmd.Cmd):
             except ValueError:
                 print("Error: Please provide a valid node ID")
                 print("Usage: detailed_status <node_id> or detailed_status all")
-
-    def _print_detailed_status(self, node_id, status):
-        """Helper to print detailed status information"""
-        print(f"Node ID: {node_id}")
-        print(f"Connection: {'Connected' if status.get('connected', False) else 'Disconnected'}")
-        print(f"Armed: {'Yes' if status.get('armed', False) else 'No'}")
-        print(f"Flight Mode: {status.get('mode', 'Unknown')}")
-        print(f"Altitude: {status.get('altitude', 0):.1f} meters")
-        
-        position = status.get('position')
-        if position:
-            print(f"Position: Lat {position[0]:.6f}, Lon {position[1]:.6f}")
-        
-        heading = status.get('heading')
-        if heading is not None:
-            print(f"Heading: {heading}°")
-        
-        groundspeed = status.get('groundspeed')
-        if groundspeed is not None:
-            print(f"Ground Speed: {groundspeed:.1f} m/s")
-        
-        gps = status.get('gps')
-        if gps:
-            print(f"GPS: Fix Type {gps.get('fix_type', 'Unknown')}, "
-                  f"Satellites {gps.get('satellites_visible', 'Unknown')}")
-        
-        battery = status.get('battery')
-        if battery:
-            percentage = battery.get('percentage')
-            voltage = battery.get('voltage')
-            battery_str = []
-            if percentage is not None:
-                battery_str.append(f"{percentage}%")
-            if voltage is not None:
-                battery_str.append(f"{voltage/1000:.2f}V")
-            if battery_str:
-                print(f"Battery: {', '.join(battery_str)}")
-        
-        system_status = status.get('system_status')
-        if system_status:
-            print(f"System Status: {system_status}")
 
     def do_stop(self, arg):
         """

@@ -1,0 +1,16 @@
+[Unit]
+Description=Drone Network Node Service
+After=network.target
+
+[Service]
+Type=simple
+User=pi
+WorkingDirectory=/home/pi/node_util
+ExecStart=/bin/bash -c 'source /home/pi/node_env/bin/activate && /home/pi/node_env/bin/python /home/pi/node_util/node.py 192.168.199._'
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
