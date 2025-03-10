@@ -24,21 +24,105 @@ class Node:
         self.is_master = False
         self.master_id = None
 
-         # Initialize drone controller
-        self.drone_controller = DroneController(connection_string="udp:127.0.0.1:14650")
+        # Initialize drone controller
+        self.drone_controller = DroneController(connection_string="udp:127.0.0.1:14550")
         self.drone_connected = False
+        
+        # Auto-connect attributes
+        self.connection_attempts = 0
+        self.max_connection_attempts = 5
+        self.connection_retry_delay = 3  # seconds
+        self.status_reporting = False
             
     def start(self):
         self.is_running = True
         threading.Thread(target=self._handle_messages, daemon=True).start()
         
-        # Broadcast initial message to handler
-        self._send_to_handler('NODE_ADDED', {'node_id': self.node_id})
+        # Start auto-connect process
+        threading.Thread(target=self._auto_connect, daemon=True).start()
         
         # Start heartbeat thread
         threading.Thread(target=self._send_heartbeat, daemon=True).start()
         print(f"Node {self.node_id} starting in initialization phase")
        
+    def _auto_connect(self):
+        """Automatic connection to drone with retry mechanism"""
+        self.connection_attempts = 0
+        connect_success = False
+        
+        print(f"Node {self.node_id}: Starting auto-connect process...")
+        
+        while self.is_running and self.connection_attempts < self.max_connection_attempts and not connect_success:
+            self.connection_attempts += 1
+            print(f"Node {self.node_id}: Connection attempt {self.connection_attempts} of {self.max_connection_attempts}")
+            
+            try:
+                # Attempt to connect to drone
+                connect_success = self.drone_controller.connect()
+                
+                if connect_success:
+                    self.drone_connected = True
+                    print(f"Node {self.node_id}: Successfully connected to drone")
+                    
+                    # Start status reporting
+                    self._start_status_reporting()
+                    
+                    # Send NODE_ADDED message to handler now that we're connected
+                    self._send_to_handler('NODE_ADDED', {'node_id': self.node_id})
+                    print(f"Node {self.node_id}: Sent NODE_ADDED message to handler")
+                    
+                    break  # Exit the retry loop if successful
+                else:
+                    print(f"Node {self.node_id}: Connection attempt failed, retrying in {self.connection_retry_delay} seconds...")
+                    time.sleep(self.connection_retry_delay)
+            except Exception as e:
+                print(f"Node {self.node_id}: Error during connection attempt: {e}")
+                time.sleep(self.connection_retry_delay)
+        
+        if not connect_success and self.connection_attempts >= self.max_connection_attempts:
+            print(f"Node {self.node_id}: Failed to connect after {self.max_connection_attempts} attempts")
+            # Still send NODE_ADDED, even though drone is not connected
+            # This allows the node to be seen in the network
+            self._send_to_handler('NODE_ADDED', {
+                'node_id': self.node_id,
+                'drone_connected': False
+            })
+    
+    def _start_status_reporting(self):
+        """Start a thread to continuously send drone status to handler"""
+        if not self.status_reporting:
+            self.status_reporting = True
+            self.status_thread = threading.Thread(target=self._status_reporter, daemon=True)
+            self.status_thread.start()
+            print(f"Node {self.node_id}: Started status reporting")
+
+    def _stop_status_reporting(self):
+        """Stop the status reporting thread"""
+        if self.status_reporting:
+            self.status_reporting = False
+            if hasattr(self, 'status_thread'):
+                self.status_thread.join(timeout=1.0)
+            print(f"Node {self.node_id}: Stopped status reporting")
+
+    def _status_reporter(self):
+        """Thread function to continuously report drone status to handler"""
+        while self.status_reporting and self.drone_connected and self.is_running:
+            try:
+                # Get comprehensive drone status
+                status = self.drone_controller.get_drone_status()
+                
+                # Send status to handler
+                self._send_to_handler('DRONE_STATUS_UPDATE', {
+                    'status': status,
+                    'timestamp': time.time()
+                })
+                
+                # Wait for next report interval
+                time.sleep(0.5)  # Report every 0.5 seconds
+            except Exception as e:
+                print(f"Error in status reporter: {e}")
+                time.sleep(1)  # Prevent tight loop in case of errors
+
     def _send_to_handler(self, message_type, data=None):
         """Send message to handler"""
         message = {
@@ -71,6 +155,8 @@ class Node:
                     # Start status reporting if connection successful
                     if success:
                         self._start_status_reporting()
+                else:
+                    result = {'success': True, 'message': 'Already connected'}
             
             elif not self.drone_connected:
                 return {'success': False, 'message': 'Drone not connected'}
@@ -80,10 +166,6 @@ class Node:
             
             elif command == 'disarm':
                 result = {'success': self.drone_controller.disarm(), 'message': 'Disarmed successfully'}
-                
-                # Stop status reporting if drone is disarmed
-                if result['success']:
-                    self._stop_status_reporting()
             
             elif command == 'takeoff':
                 if params and 'altitude' in params:
@@ -116,7 +198,7 @@ class Node:
                     result = {'success': False, 'message': 'Throttle value required'}
                     
             elif command == 'get_mode':
-                # Command to get current flight mode
+                # New command to get current flight mode
                 current_mode = self.drone_controller.get_current_mode()
                 if current_mode:
                     result = {
@@ -135,7 +217,7 @@ class Node:
                     'message': 'Status retrieved successfully',
                     'status': status
                 }
-            
+                
             elif command == 'disconnect':
                 # Add a disconnect command to stop status reporting
                 if self.drone_connected:
@@ -152,42 +234,6 @@ class Node:
         return result
 
 
-    def _start_status_reporting(self):
-        """Start a thread to continuously send drone status to handler"""
-        if not hasattr(self, 'status_reporting') or not self.status_reporting:
-            self.status_reporting = True
-            self.status_thread = threading.Thread(target=self._status_reporter, daemon=True)
-            self.status_thread.start()
-            print(f"Node {self.node_id}: Started status reporting")
-
-    def _stop_status_reporting(self):
-        """Stop the status reporting thread"""
-        if hasattr(self, 'status_reporting') and self.status_reporting:
-            self.status_reporting = False
-            if hasattr(self, 'status_thread'):
-                self.status_thread.join(timeout=1.0)
-            print(f"Node {self.node_id}: Stopped status reporting")
-
-    def _status_reporter(self):
-        """Thread function to continuously report drone status to handler"""
-        while self.status_reporting and self.drone_connected:
-            try:
-                # Get comprehensive drone status
-                status = self.drone_controller.get_drone_status()
-                
-                # Send status to handler
-                self._send_to_handler('DRONE_STATUS_UPDATE', {
-                    'status': status,
-                    'timestamp': time.time()
-                })
-                
-                # Wait for next report interval
-                time.sleep(1)  # Report every 1 seconds
-            except Exception as e:
-                print(f"Error in status reporter: {e}")
-                time.sleep(1)  # Prevent tight loop in case of errors
-
-    # TODO: Remove it because it's redundant
     def _broadcast_to_nodes(self, message_type, data=None):
         """Broadcast message to all known nodes"""
         for node_id, (host, port) in self.nodes.items():
