@@ -4,7 +4,9 @@ import sys
 import argparse
 import time
 import threading
+import enum
 from pymavlink import mavutil
+import pymavlink.dialects.v20.all as dialect
 from datetime import datetime
 from loguru import logger
 
@@ -17,22 +19,52 @@ logger.add(
     level="INFO"
 )
 
-'''
-# Remove default console logger
-logger.remove()
-# Configure loguru to only log to file
-logger.add(
-    "drone_controller.log",
-    # sink=sys.stderr,
-    format="{time:YYYY-MM-DD HH:mm:ss.SSS} | {level: <8} | {message}",
-    rotation="10 MB",
-    retention="7 days",
-    compression="zip",
-    level="INFO",
-    backtrace=True,
-    diagnose=True
-)
-'''
+# Define flight mode as enum class
+class FlightMode(enum.Enum):
+    STABILIZE = "STABILIZE"
+    GUIDED = "GUIDED"
+    AUTO = "AUTO"
+    LOITER = "LOITER"
+    RTL = "RTL"  # Return to Launch
+    LAND = "LAND"
+    BRAKE = "BRAKE"
+    DRIFT = "DRIFT"
+    SPORT = "SPORT"
+    FLIP = "FLIP"
+    AUTOTUNE = "AUTOTUNE"
+    POSHOLD = "POSHOLD"
+    THROW = "THROW"
+    AVOID_ADSB = "AVOID_ADSB"
+    GUIDED_NOGPS = "GUIDED_NOGPS"
+    CIRCLE = "CIRCLE"
+
+    @classmethod
+    def from_string(cls, mode_str):
+        """Convert string to FlightMode enum"""
+        try:
+            return cls(mode_str.upper())
+        except ValueError:
+            logger.warning(f"Unknown flight mode: {mode_str}")
+            return None
+
+    @classmethod
+    def to_string(cls, mode_enum):
+        """Convert FlightMode enum to string"""
+        if isinstance(mode_enum, cls):
+            return mode_enum.value
+        return str(mode_enum)
+
+    def __str__(self):
+        """String representation for enum value"""
+        return self.value
+
+    def __repr__(self):
+        """String representation for debugging"""
+        return f"FlightMode.{self.name}"
+
+    def to_json(self):
+        """Return JSON serializable representation"""
+        return self.value
 
 class DroneController:
     def __init__(self, connection_string="udp:127.0.0.1:14550"):
@@ -44,7 +76,7 @@ class DroneController:
         self.connection_string = connection_string
         self.drone = None
         self.is_armed = False
-        self.flight_mode = None
+        self.flight_mode = None  # Will store FlightMode enum
         self.altitude = 0
 
         # Status tracking variables
@@ -69,14 +101,12 @@ class DroneController:
             self.tracker_thread = threading.Thread(target=self._status_tracker)
             self.tracker_thread.daemon = True  # Thread will close when main program exits
             self.tracker_thread.start()
-            # logger.info("Status tracking started")
 
     def stop_status_tracking(self):
         """Stop the status tracking thread"""
         self.tracking = False
         if self.tracker_thread:
             self.tracker_thread.join()
-            # logger.info("Status tracking stopped")
 
     def _status_tracker(self):
         """Background thread function to track drone status"""
@@ -90,38 +120,34 @@ class DroneController:
 
                     # Process different message types
                     if msg_type == 'HEARTBEAT':
-                        self.current_status['armed'] = msg.base_mode & mavutil.mavlink.MAV_MODE_FLAG_SAFETY_ARMED
-                        self.current_status['system_status'] = mavutil.mavlink.enums['MAV_STATE'][msg.system_status].name
-                        '''
-                        logger.info(f"HEARTBEAT - Armed: {self.current_status['armed']}, "
-                                  f"Status: {self.current_status['system_status']}")
-                        '''
+                        self.current_status['armed'] = bool(msg.base_mode & dialect.MAV_MODE_FLAG_SAFETY_ARMED)
+                        self.current_status['system_status'] = dialect.enums['MAV_STATE'][msg.system_status].name
+
+                        # Update flight mode from heartbeat
+                        custom_mode = msg.custom_mode
+                        flight_mode_str = mavutil.mode_mapping_acm.get(custom_mode)
+                        if flight_mode_str:
+                            try:
+                                self.flight_mode = FlightMode.from_string(flight_mode_str)
+                                self.current_status['mode'] = flight_mode_str
+                            except (ValueError, AttributeError):
+                                # If not a known enum value, store the string directly
+                                self.flight_mode = flight_mode_str
+                                self.current_status['mode'] = flight_mode_str
+
                     elif msg_type == 'GLOBAL_POSITION_INT':
                         self.current_status['altitude'] = msg.relative_alt / 1000  # Convert to meters
                         self.current_status['position'] = (msg.lat / 1e7, msg.lon / 1e7)  # Convert to degrees
-                        '''
-                        logger.info(f"POSITION - Alt: {self.current_status['altitude']:.1f}m, "
-                                  f"Lat: {self.current_status['position'][0]:.6f}, "
-                                  f"Lon: {self.current_status['position'][1]:.6f}")
-                        '''
 
                     elif msg_type == 'VFR_HUD':
                         self.current_status['groundspeed'] = msg.groundspeed
                         self.current_status['heading'] = msg.heading
-                        '''
-                        logger.info(f"VFR - Speed: {msg.groundspeed:.1f}m/s, "
-                                  f"Heading: {msg.heading}°")
-                        '''
 
                     elif msg_type == 'GPS_RAW_INT':
                         self.current_status['gps'] = {
                             'fix_type': msg.fix_type,
                             'satellites_visible': msg.satellites_visible
                         }
-                        '''
-                        logger.info(f"GPS - Fix: {msg.fix_type}, "
-                                  f"Satellites: {msg.satellites_visible}")
-                        '''
 
                     elif msg_type == 'SYS_STATUS':
                         battery_remaining = msg.battery_remaining if hasattr(msg, 'battery_remaining') else None
@@ -130,13 +156,6 @@ class DroneController:
                             'percentage': battery_remaining,
                             'voltage': voltage
                         }
-                        if voltage:
-                            '''
-                            logger.info(f"BATTERY - Remaining: {battery_remaining}%, "
-                                      f"Voltage: {voltage/1000:.2f}V")
-                        else:
-                            logger.info("BATTERY - Data not available")
-                            '''
 
             except Exception as e:
                 logger.error(f"Error in status tracker: {str(e)}")
@@ -163,7 +182,10 @@ class DroneController:
 
     def arm(self):
         """
-        Arm the drone
+        Arm the drone with retry capability
+        Args:
+            max_retries (int): Maximum number of retry attempts
+            retry_delay (float): Delay between retries in seconds
         Returns:
             bool: True if arming successful, False otherwise
         """
@@ -172,32 +194,53 @@ class DroneController:
             return False
 
         # Set mode to GUIDED
-        self.set_flight_mode("GUIDED")
+        self.set_flight_mode(FlightMode.GUIDED)
         time.sleep(1)  # Wait for mode change
 
-        # Send arm command
-        self.drone.mav.command_long_send(
-            self.drone.target_system,
-            self.drone.target_component,
-            mavutil.mavlink.MAV_CMD_COMPONENT_ARM_DISARM,
-            0,
-            1, 0, 0, 0, 0, 0, 0
+        # Create arm command message
+        arm_message = dialect.MAVLink_command_long_message(
+            target_system=self.drone.target_system,
+            target_component=self.drone.target_component,
+            command=dialect.MAV_CMD_COMPONENT_ARM_DISARM,
+            confirmation=0,
+            param1=1,  # 1 to arm
+            param2=0,
+            param3=0,
+            param4=0,
+            param5=0,
+            param6=0,
+            param7=0
         )
 
+        # Send the arm message
+        self.drone.mav.send(arm_message)
+        logger.info("Arm the vehicle")
+
         # Wait for arm acknowledge
-        ack = self.drone.recv_match(type='COMMAND_ACK', blocking=True, timeout=3)
-        if ack and ack.command == mavutil.mavlink.MAV_CMD_COMPONENT_ARM_DISARM:
-            self.is_armed = (ack.result == 0)
-            if self.is_armed:
+        ack = self.drone.recv_match(type='COMMAND_ACK', blocking=True, timeout=1.0)
+
+        if ack and ack.command == dialect.MAV_CMD_COMPONENT_ARM_DISARM:
+            success = (ack.result == dialect.MAV_RESULT_ACCEPTED)
+            if success:
+                self.is_armed = True
                 logger.success("Armed successfully!")
+                return True
             else:
-                logger.error("Arming failed!")
-            return self.is_armed
+                # Log the specific failure reason if available
+                result_name = dialect.enums['MAV_RESULT'][ack.result].name if ack.result in dialect.enums['MAV_RESULT'] else f"Unknown ({ack.result})"
+                logger.warning(f"Arm attempt failed: {result_name}")
+        else:
+            logger.warning("No acknowledgment received for arm attempt")
+
+
         return False
 
-    def disarm(self):
+    def disarm(self, max_retries=3, retry_delay=2):
         """
-        Disarm the drone
+        Disarm the drone with retry capability
+        Args:
+            max_retries (int): Maximum number of retry attempts
+            retry_delay (float): Delay between retries in seconds
         Returns:
             bool: True if disarming successful, False otherwise
         """
@@ -205,61 +248,204 @@ class DroneController:
             logger.error("No drone connection")
             return False
 
-        self.drone.mav.command_long_send(
-            self.drone.target_system,
-            self.drone.target_component,
-            mavutil.mavlink.MAV_CMD_COMPONENT_ARM_DISARM,
-            0,
-            0, 0, 0, 0, 0, 0, 0
+        # Create disarm command message
+        disarm_message = dialect.MAVLink_command_long_message(
+            target_system=self.drone.target_system,
+            target_component=self.drone.target_component,
+            command=dialect.MAV_CMD_COMPONENT_ARM_DISARM,
+            confirmation=0,
+            param1=0,  # 0 to disarm
+            param2=0,
+            param3=0,
+            param4=0,
+            param5=0,
+            param6=0,
+            param7=0
         )
 
-        ack = self.drone.recv_match(type='COMMAND_ACK', blocking=True, timeout=3)
-        if ack and ack.command == mavutil.mavlink.MAV_CMD_COMPONENT_ARM_DISARM:
-            self.is_armed = not (ack.result == 0)
-            if not self.is_armed:
-                logger.success("Disarmed successfully!")
+        # Try disarming with retries using while loop
+        attempts = 0
+        while attempts < max_retries:
+            attempts += 1
+
+            # Send the disarm message
+            self.drone.mav.send(disarm_message)
+            logger.info(f"Disarm attempt {attempts}/{max_retries}")
+
+            # Wait for acknowledgment
+            ack = self.drone.recv_match(type='COMMAND_ACK', blocking=True, timeout=1.0)
+
+            if ack and ack.command == dialect.MAV_CMD_COMPONENT_ARM_DISARM:
+                success = (ack.result == dialect.MAV_RESULT_ACCEPTED)
+                if success:
+                    self.is_armed = False
+                    logger.success("Disarmed successfully!")
+                    return True
+                else:
+                    # Log the specific failure reason if available
+                    result_name = dialect.enums['MAV_RESULT'][ack.result].name if ack.result in dialect.enums['MAV_RESULT'] else f"Unknown ({ack.result})"
+                    logger.warning(f"Disarm attempt {attempts} failed: {result_name}")
             else:
-                logger.error("Disarming failed!")
-            return not self.is_armed
+                logger.warning(f"No acknowledgment received for disarm attempt {attempts}")
+
+            # Check if we should retry
+            if attempts < max_retries:
+                logger.info(f"Retrying in {retry_delay} seconds...")
+                time.sleep(retry_delay)
+            else:
+                logger.error(f"Disarming failed after {max_retries} attempts")
+
         return False
 
-    def takeoff(self, target_altitude):
+    def takeoff(self, target_altitude, max_retries=3, retry_delay=2):
         """
-        Take off to specified altitude
+        Take off to specified altitude with retry capability
         Args:
             target_altitude (float): Target altitude in meters
+            max_retries (int): Maximum number of retry attempts
+            retry_delay (float): Delay between retries in seconds
         Returns:
             bool: True if takeoff command accepted, False otherwise
         """
-        if not self.drone or not self.is_armed:
-            logger.error("Drone not connected or not armed")
+        if not self.drone:
+            logger.error("Drone not connected")
             return False
 
-        self.drone.mav.command_long_send(
-            self.drone.target_system,
-            self.drone.target_component,
-            mavutil.mavlink.MAV_CMD_NAV_TAKEOFF,
-            0,
-            0, 0, 0, 0, 0, 0,
-            target_altitude
+        # Create arm command message
+        arm_message = dialect.MAVLink_command_long_message(
+            target_system=self.drone.target_system,
+            target_component=self.drone.target_component,
+            command=dialect.MAV_CMD_COMPONENT_ARM_DISARM,
+            confirmation=0,
+            param1=1,  # 1 to arm
+            param2=0,
+            param3=0,
+            param4=0,
+            param5=0,
+            param6=0,
+            param7=0
         )
 
-        ack = self.drone.recv_match(type='COMMAND_ACK', blocking=True, timeout=3)
-        if ack and ack.command == mavutil.mavlink.MAV_CMD_NAV_TAKEOFF:
-            success = (ack.result == 0)
-            if success:
-                logger.success(f"Takeoff command accepted! Target altitude: {target_altitude}m")
-                self.altitude = target_altitude
+        # Send the arm message
+        self.drone.mav.send(arm_message)
+        logger.info("Arm the vehicle")
+        time.sleep(1)
+
+        # Create takeoff command message
+        takeoff_message = dialect.MAVLink_command_long_message(
+            target_system=self.drone.target_system,
+            target_component=self.drone.target_component,
+            command=dialect.MAV_CMD_NAV_TAKEOFF,
+            confirmation=0,
+            param1=0,
+            param2=0,
+            param3=0,
+            param4=0,
+            param5=0,
+            param6=0,
+            param7=target_altitude
+        )
+
+        # Try takeoff with retries using while loop
+        attempts = 0
+        while attempts < max_retries:
+            attempts += 1
+
+            # Send the takeoff message
+            self.drone.mav.send(takeoff_message)
+            logger.info(f"Takeoff attempt {attempts}/{max_retries} to {target_altitude}m")
+
+            # Wait for acknowledgment
+            ack = self.drone.recv_match(type='COMMAND_ACK', blocking=True, timeout=1.0)
+
+            if ack and ack.command == dialect.MAV_CMD_NAV_TAKEOFF:
+                success = (ack.result == dialect.MAV_RESULT_ACCEPTED)
+                if success:
+                    logger.success(f"Takeoff command accepted! Target altitude: {target_altitude}m")
+                    self.altitude = target_altitude
+                    return True
+                else:
+                    # Log the specific failure reason if available
+                    result_name = dialect.enums['MAV_RESULT'][ack.result].name if ack.result in dialect.enums['MAV_RESULT'] else f"Unknown ({ack.result})"
+                    logger.warning(f"Takeoff attempt {attempts} failed: {result_name}")
             else:
-                logger.error("Takeoff command failed!")
-            return success
+                logger.warning(f"No acknowledgment received for takeoff attempt {attempts}")
+
+            # Check if we should retry
+            if attempts < max_retries:
+                logger.info(f"Retrying in {retry_delay} seconds...")
+                time.sleep(retry_delay)
+            else:
+                logger.error(f"Takeoff failed after {max_retries} attempts")
+
+        return False
+
+    def land(self, max_retries=3, retry_delay=2):
+        """
+        Command the drone to land with retry capability
+        Args:
+            max_retries (int): Maximum number of retry attempts
+            retry_delay (float): Delay between retries in seconds
+        Returns:
+            bool: True if land command accepted, False otherwise
+        """
+        if not self.drone:
+            logger.error("No drone connection")
+            return False
+
+        # Create land command message
+        land_message = dialect.MAVLink_command_long_message(
+            target_system=self.drone.target_system,
+            target_component=self.drone.target_component,
+            command=dialect.MAV_CMD_NAV_LAND,
+            confirmation=0,
+            param1=0,
+            param2=0,
+            param3=0,
+            param4=0,
+            param5=0,
+            param6=0,
+            param7=0
+        )
+
+        # Try land with retries using while loop
+        attempts = 0
+        while attempts < max_retries:
+            attempts += 1
+
+            # Send the land message
+            self.drone.mav.send(land_message)
+            logger.info(f"Land attempt {attempts}/{max_retries}")
+
+            # Wait for acknowledgment
+            ack = self.drone.recv_match(type='COMMAND_ACK', blocking=True, timeout=1.0)
+
+            if ack and ack.command == dialect.MAV_CMD_NAV_LAND:
+                success = (ack.result == dialect.MAV_RESULT_ACCEPTED)
+                if success:
+                    logger.success("Land command accepted!")
+                    return True
+                else:
+                    # Log the specific failure reason if available
+                    result_name = dialect.enums['MAV_RESULT'][ack.result].name if ack.result in dialect.enums['MAV_RESULT'] else f"Unknown ({ack.result})"
+                    logger.warning(f"Land attempt {attempts} failed: {result_name}")
+            else:
+                logger.warning(f"No acknowledgment received for land attempt {attempts}")
+
+            # Check if we should retry
+            if attempts < max_retries:
+                logger.info(f"Retrying in {retry_delay} seconds...")
+                time.sleep(retry_delay)
+            else:
+                logger.error(f"Land command failed after {max_retries} attempts")
+
         return False
 
     def set_flight_mode(self, mode):
         """
         Set the flight mode of the drone
         Args:
-            mode (str): Flight mode to set
+            mode (str or FlightMode): Flight mode to set
         Returns:
             bool: True if mode change successful, False otherwise
         """
@@ -268,9 +454,23 @@ class DroneController:
             return False
 
         try:
-            self.drone.set_mode(mode)
-            self.flight_mode = mode
-            logger.success(f"Flight mode set to {mode}")
+            # Convert to FlightMode enum if string is provided
+            if isinstance(mode, str):
+                mode_enum = FlightMode.from_string(mode)
+                if not mode_enum:
+                    logger.error(f"Invalid flight mode: {mode}")
+                    return False
+            else:
+                mode_enum = mode
+
+            # Get mode string for mavlink
+            mode_str = FlightMode.to_string(mode_enum)
+
+            # Using mavutil's set_mode, as dialect doesn't provide a direct way to set mode
+            # with a MAVLink_command_long_message
+            self.drone.set_mode(mode_str)
+            self.flight_mode = mode_enum
+            logger.success(f"Flight mode set to {mode_str}")
             return True
         except Exception as e:
             logger.error(f"Failed to set flight mode: {str(e)}")
@@ -290,6 +490,10 @@ class DroneController:
 
         if 0 <= throttle_value <= 100:
             pwm = 1000 + (throttle_value * 10)
+
+            # Create RC channels override message
+            # Note: This is not a command_long, but a different message type
+            # We keep using the drone.mav.rc_channels_override_send method for this
             self.drone.mav.rc_channels_override_send(
                 self.drone.target_system,
                 self.drone.target_component,
@@ -297,6 +501,7 @@ class DroneController:
                 65535, 65535, 65535,  # Other channels (unused)
                 65535, 65535, 65535, 65535
             )
+
             logger.success(f"Throttle set to {throttle_value}%")
             return True
         else:
@@ -308,36 +513,56 @@ class DroneController:
         Get the current flight mode of the drone
 
         Returns:
-            str: Current flight mode, or None if not connected
+            FlightMode: Current flight mode enum, or None if not connected
         """
         if not self.drone:
             return None
 
         try:
-            # Request flight mode information from the drone
-            self.drone.mav.command_long_send(
-                self.drone.target_system,
-                self.drone.target_component,
-                mavutil.mavlink.MAV_CMD_REQUEST_MESSAGE,
-                0,  # Confirmation
-                mavutil.mavlink.MAVLINK_MSG_ID_HEARTBEAT,  # Message ID for heartbeat that contains mode info
-                0, 0, 0, 0, 0, 0  # Unused parameters
+            # Create request message command
+            request_message = dialect.MAVLink_command_long_message(
+                target_system=self.drone.target_system,
+                target_component=self.drone.target_component,
+                command=dialect.MAV_CMD_REQUEST_MESSAGE,
+                confirmation=0,
+                param1=dialect.MAVLINK_MSG_ID_HEARTBEAT,  # Message ID for heartbeat
+                param2=0,
+                param3=0,
+                param4=0,
+                param5=0,
+                param6=0,
+                param7=0
             )
+
+            # Send the request message
+            self.drone.mav.send(request_message)
 
             # Wait for heartbeat message to get mode
             msg = self.drone.recv_match(type='HEARTBEAT', blocking=True, timeout=1.0)
             if msg:
                 # Convert mode to string using MAVLink mode mapping
                 custom_mode = msg.custom_mode
-                flight_mode = mavutil.mode_mapping_acm.get(custom_mode)
+                flight_mode_str = mavutil.mode_mapping_acm.get(custom_mode)
 
-                # Update internal mode tracking
-                self.flight_mode = flight_mode
-                logger.info(f"Current flight mode: {flight_mode}")
-                return flight_mode
+                if flight_mode_str:
+                    # Convert to FlightMode enum and update internal tracking
+                    try:
+                        flight_mode_enum = FlightMode.from_string(flight_mode_str)
+                        self.flight_mode = flight_mode_enum
+                        logger.info(f"Current flight mode: {flight_mode_str}")
+                        return flight_mode_enum
+                    except ValueError:
+                        logger.warning(f"Unknown flight mode string: {flight_mode_str}")
+                        # Still update the internal string representation
+                        self.flight_mode = flight_mode_str
+                        return flight_mode_str
+                else:
+                    logger.warning("Couldn't determine flight mode from heartbeat")
             else:
                 logger.warning("Couldn't retrieve flight mode - no heartbeat received")
-                return self.flight_mode  # Return last known mode if available
+
+            # Return last known mode if available
+            return self.flight_mode
 
         except Exception as e:
             logger.error(f"Error getting flight mode: {str(e)}")
@@ -359,11 +584,19 @@ class DroneController:
         if not self.flight_mode:
             self.get_current_mode()
 
+        # Convert enum to string for display if needed
+        if isinstance(self.flight_mode, FlightMode):
+            mode_display = self.flight_mode.value
+        elif isinstance(self.flight_mode, str):
+            mode_display = self.flight_mode
+        else:
+            mode_display = "Unknown"
+
         # Compile status information
         status = {
             'connected': True,
             'armed': self.is_armed,
-            'mode': self.flight_mode,
+            'mode': mode_display,
             'altitude': self.altitude,
         }
 
@@ -382,44 +615,6 @@ class DroneController:
         if self.drone:
             self.drone.close()
             logger.info("Drone connection closed")
-
-
-def create_parser():
-    """Create argument parser for drone commands"""
-    parser = argparse.ArgumentParser(description='Drone Control CLI')
-
-    # Create subparsers for different commands
-    subparsers = parser.add_subparsers(dest='command', help='Available commands')
-
-    # Connect command
-    connect_parser = subparsers.add_parser('connect', help='Connect to drone')
-    connect_parser.add_argument('--connection', type=str, default="udp:127.0.0.1:14550",
-                              help='Connection string (default: udp:127.0.0.1:14550)')
-
-    # Arm command
-    arm_parser = subparsers.add_parser('arm', help='Arm the drone')
-
-    # Disarm command
-    disarm_parser = subparsers.add_parser('disarm', help='Disarm the drone')
-
-    # Mode command
-    mode_parser = subparsers.add_parser('mode', help='Set flight mode')
-    mode_parser.add_argument('mode_name', type=str, help='Flight mode to set (e.g., GUIDED, AUTO, RTL)')
-
-    # Takeoff command
-    takeoff_parser = subparsers.add_parser('takeoff', help='Take off to specified altitude')
-    takeoff_parser.add_argument('altitude', type=float, help='Target altitude in meters')
-
-    # Throttle command
-    throttle_parser = subparsers.add_parser('throttle', help='Set throttle value')
-    throttle_parser.add_argument('value', type=int, help='Throttle value (0-100)')
-
-    # Status command
-    status_parser = subparsers.add_parser('status', help='Show drone status')
-    status_parser.add_argument('--duration', type=int, default=10,
-                             help='Duration to show status in seconds (default: 10)')
-
-    return parser
 
 
 class DroneShell(cmd.Cmd):
@@ -447,40 +642,90 @@ class DroneShell(cmd.Cmd):
     def do_arm(self, arg):
         """Arm the drone"""
         if self._check_connection():
+            print("Arming drone...")
             if self.drone_controller.arm():
                 print("Drone armed successfully")
+            else:
+                print("Arming failed")
 
     def do_disarm(self, arg):
         """Disarm the drone"""
         if self._check_connection():
-            self.drone_controller.disarm()
+            print("Disarming drone...")
+            if self.drone_controller.disarm():
+                print("Drone disarmed successfully")
+            else:
+                print("Disarming failed")
 
     def do_mode(self, arg):
         """
         Set flight mode
         Usage: mode <mode_name>
         Example: mode GUIDED
+        Available modes: STABILIZE, GUIDED, AUTO, LOITER, RTL, LAND, etc.
         """
         if not arg:
             print("Error: Please specify a flight mode")
+            print("Available modes:")
+            for mode in FlightMode:
+                print(f"  {mode.value}")
             return
+
         if self._check_connection():
-            self.drone_controller.set_flight_mode(arg)
+            try:
+                # Try to convert to enum to validate
+                mode = arg.upper()
+                valid_modes = [m.value for m in FlightMode]
+
+                if mode not in valid_modes:
+                    print(f"Invalid mode: {arg}")
+                    print("Available modes:")
+                    for valid_mode in valid_modes:
+                        print(f"  {valid_mode}")
+                    return
+
+                self.drone_controller.set_flight_mode(mode)
+            except Exception as e:
+                print(f"Error setting mode: {str(e)}")
 
     def do_takeoff(self, arg):
         """
         Take off to specified altitude
         Usage: takeoff <altitude>
-        Example: takeoff 10
+        Example: takeoff 10       - Take off to 10m altitude
         """
         try:
+            # Parse altitude argument
             altitude = float(arg)
+
             if self._check_connection():
-                if self.drone_controller.arm():  # Ensure drone is armed
+                if not self.drone_controller.is_armed:
+                    print("Arming drone...")
+                    if not self.drone_controller.arm():
+                        print("Failed to arm drone. Aborting takeoff.")
+                        return
                     time.sleep(1)
-                    self.drone_controller.takeoff(altitude)
+
+                print(f"Taking off to {altitude}m...")
+                if self.drone_controller.takeoff(altitude):
+                    print(f"Takeoff command accepted. Climbing to {altitude}m")
+                else:
+                    print("Takeoff command failed")
         except ValueError:
-            print("Error: Please provide a valid altitude in meters")
+            print("Error: Invalid altitude. Usage: takeoff <altitude>")
+            print("Example: takeoff 10  - Take off to 10m altitude")
+
+    def do_land(self, arg):
+        """
+        Command the drone to land
+        Usage: land
+        """
+        if self._check_connection():
+            print("Landing...")
+            if self.drone_controller.land():
+                print("Land command accepted. Drone is landing...")
+            else:
+                print("Land command failed")
 
     def do_throttle(self, arg):
         """
@@ -499,18 +744,32 @@ class DroneShell(cmd.Cmd):
         """
         Show current drone status
         Usage: status [duration]
-        Example: status 5 (shows status for 3 seconds)
+        Example: status 5 (shows status for 5 seconds)
         """
         if not self._check_connection():
             return
 
-        timeout = 3
+        try:
+            timeout = int(arg) if arg else 3
+        except ValueError:
+            timeout = 3
+
+        print("Monitoring drone status for", timeout, "seconds:")
         start_time = time.time()
         while time.time() - start_time < timeout:
-            print(f"position: {self.drone_controller.current_status['position']}")
+            status = self.drone_controller.get_drone_status()
+
+            # Format mode display - handle case where mode might be None, string, or enum
+            mode_display = status['mode']
+            if mode_display is None:
+                mode_display = "Unknown"
+
+            print(f"Armed: {status['armed']}, Mode: {mode_display}, Alt: {status['altitude']:.1f}m")
+            if status.get('position'):
+                print(f"Position: Lat {status['position'][0]:.6f}, Lon {status['position'][1]:.6f}")
             time.sleep(1)
 
-        print("status monitoring ended")
+        print("Status monitoring ended")
 
     def do_quit(self, arg):
         """Quit the drone control shell"""
@@ -526,18 +785,14 @@ class DroneShell(cmd.Cmd):
             return False
         return True
 
-    # Shortcuts for common commands
-    do_q = do_quit
-    do_exit = do_quit
 
 def main():
     try:
         DroneShell().cmdloop()
     except KeyboardInterrupt:
         print("\nProgram interrupted by user")
-        if DroneShell().drone_controller:
+        if hasattr(DroneShell(), 'drone_controller') and DroneShell().drone_controller:
             DroneShell().drone_controller.cleanup()
-
 
 
 if __name__ == "__main__":

@@ -8,6 +8,19 @@ from controller import DroneController
 class NodeType(Enum):
     NODE = "NODE"
 
+class JSONEncoder(json.JSONEncoder):
+    """Extended JSON encoder that can handle custom objects"""
+    
+    def default(self, obj):
+        # Handle Flight Mode enums
+        if hasattr(obj, 'to_json'):
+            return obj.to_json()
+        # Handle enums
+        elif isinstance(obj, Enum):
+            return obj.value
+        # Let the parent class handle other types or raise TypeError
+        return super().default(obj)
+
 class Node:
     def __init__(self, ip, handler_ip='192.168.199.0', handler_port=5000):
         self.ip = ip
@@ -25,13 +38,13 @@ class Node:
         self.master_id = None
 
         # Initialize drone controller
-        self.drone_controller = DroneController(connection_string="udp:127.0.0.1:14550")
+        self.drone_controller = DroneController(connection_string="udp:127.0.0.1:14650")
         self.drone_connected = False
         
         # Auto-connect attributes
         self.connection_attempts = 0
-        self.max_connection_attempts = 5
-        self.connection_retry_delay = 3  # seconds
+        self.max_connection_attempts = 10
+        self.connection_retry_delay = 2  # seconds
         self.status_reporting = False
             
     def start(self):
@@ -79,15 +92,6 @@ class Node:
                 print(f"Node {self.node_id}: Error during connection attempt: {e}")
                 time.sleep(self.connection_retry_delay)
         
-        if not connect_success and self.connection_attempts >= self.max_connection_attempts:
-            print(f"Node {self.node_id}: Failed to connect after {self.max_connection_attempts} attempts")
-            # Still send NODE_ADDED, even though drone is not connected
-            # This allows the node to be seen in the network
-            self._send_to_handler('NODE_ADDED', {
-                'node_id': self.node_id,
-                'drone_connected': False
-            })
-    
     def _start_status_reporting(self):
         """Start a thread to continuously send drone status to handler"""
         if not self.status_reporting:
@@ -131,8 +135,10 @@ class Node:
             'data': data or {}
         }
         try:
+            # Use the custom encoder to handle Enum values and other custom objects
+            json_message = json.dumps(message, cls=JSONEncoder)
             self.socket.sendto(
-                json.dumps(message).encode(),
+                json_message.encode(),
                 (self.handler_ip, self.handler_port)
             )
         except Exception as e:
@@ -200,11 +206,17 @@ class Node:
             elif command == 'get_mode':
                 # New command to get current flight mode
                 current_mode = self.drone_controller.get_current_mode()
+                # Ensure flight mode is serializable
+                if hasattr(current_mode, 'value'):
+                    mode_value = current_mode.value
+                else:
+                    mode_value = str(current_mode)
+                    
                 if current_mode:
                     result = {
                         'success': True,
-                        'message': f'Current flight mode: {current_mode}',
-                        'mode': current_mode
+                        'message': f'Current flight mode: {mode_value}',
+                        'mode': mode_value
                     }
                 else:
                     result = {'success': False, 'message': 'Could not retrieve flight mode'}
@@ -243,7 +255,9 @@ class Node:
                 'data': data or {}
             }
             try:
-                self.socket.sendto(json.dumps(message).encode(), (host, port))
+                # Use the custom encoder for broadcasting
+                json_message = json.dumps(message, cls=JSONEncoder)
+                self.socket.sendto(json_message.encode(), (host, port))
             except Exception as e:
                 print(f"Error broadcasting to node {node_id}: {e}")
 
@@ -293,9 +307,16 @@ class Node:
             # Include drone status in heartbeat if connected
             status_data = {}
             if self.drone_connected:
+                # Ensure flight mode is serializable
+                mode = self.drone_controller.flight_mode
+                if hasattr(mode, 'value'):
+                    mode_value = mode.value
+                else:
+                    mode_value = str(mode)
+                    
                 status_data = {
                     'armed': self.drone_controller.is_armed,
-                    'mode': self.drone_controller.flight_mode,
+                    'mode': mode_value,
                     'altitude': self.drone_controller.altitude
                 }
             

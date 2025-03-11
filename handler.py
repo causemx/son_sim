@@ -678,6 +678,10 @@ class HandlerShell(cmd.Cmd):
         self.handler = handler
         # Remove last_command_node since we'll use node_id directly with each command
 
+    def emptyline(self):
+        """Override emptyline to do nothing when Enter is pressed with no command"""
+        pass
+
     def do_nodes(self, arg):
         """
         List all connected nodes in the network
