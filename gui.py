@@ -1,3 +1,11 @@
+import folium
+import io
+import socket
+import json
+import sys
+import time
+import logging
+import random
 from PyQt5.QtWidgets import (
     QApplication,
     QMainWindow,
@@ -6,15 +14,13 @@ from PyQt5.QtWidgets import (
     QTextEdit,
     QDockWidget
 )
-from PyQt5.QtCore import pyqtSignal, QThread, Qt, QTimer
+from PyQt5.QtCore import (
+    pyqtSignal,
+    QThread,
+    Qt
+)
 from PyQt5.QtWebEngineWidgets import QWebEngineView
-import folium
-import io
-import socket
-import json
-import sys
-import time
-import logging
+
 
 # Configure logging to only show console output
 logging.basicConfig(
@@ -87,9 +93,8 @@ class NetworkVisualizerWidget(QWidget):
         if node_type == "MONITOR":
             return
 
-        # Add node without position - position will be set by simulator
         self.nodes[node_id] = {
-            "pos": None,  # Position will be updated by position simulator
+            "pos": None,
             "type": node_type,
             "status": "Active",
             "color": 'blue',
@@ -98,11 +103,6 @@ class NetworkVisualizerWidget(QWidget):
             "last_seen": time.time()
         }
 
-        # If this is node 1, make it master
-        if node_id == 1:
-            self.updateMasterStatus(1)
-
-        print(f"Node added: ID={node_id}, waiting for position from simulator")
         self._redraw()
 
     def removeNode(self, node_id):
@@ -111,16 +111,7 @@ class NetworkVisualizerWidget(QWidget):
                 self.last_positions[node_id] = self.nodes[node_id]["pos"]
             del self.nodes[node_id]
             self._redraw()
-    """
-    def updateNodePosition(self, node_id, x, y):
-        if node_id in self.nodes:
-            # In Folium, we'll use [lat, lng] - but in our grid, we'll just use [y, x]
-            self.nodes[node_id]["pos"] = (y, x)
-            print(f"Node {node_id} position updated: ({x:.2f}, {y:.2f})")
-            self._redraw()
-        else:
-            print(f"Position update for unknown node: {node_id}")
-    """
+
 
     def updateMasterStatus(self, master_id):
         if self.in_transition:
@@ -167,204 +158,95 @@ class NetworkVisualizerWidget(QWidget):
         if node_id in self.nodes:
             # Store the status data
             self.drone_statuses[node_id] = status_data
-            
-            # Check for position and handle [0.0, 0.0] case
-            needs_position_simulation = False
-            
+
             # Update position if provided in status
             if 'position' in status_data and status_data['position']:
                 lat, lon = status_data['position']
-                
-                # Check if position is [0.0, 0.0] or very close to it
-                if (abs(lat) < 0.0001 and abs(lon) < 0.0001):
-                    # Position is effectively [0.0, 0.0], trigger simulation
-                    needs_position_simulation = True
-                    print(f"Node {node_id}: Received null position [0.0, 0.0], will simulate position")
-                else:
-                    # Valid position received, update node
-                    # Only redraw if position changed significantly or not set
-                    current_pos = self.nodes[node_id].get("pos")
-                    if current_pos is None or abs(current_pos[0] - lat) > 0.0001 or abs(current_pos[1] - lon) > 0.0001:
-                        self.nodes[node_id]["pos"] = (lat, lon)
-                        print(f"Node {node_id}: Position updated to ({lat}, {lon})")
-            else:
-                # No position data in status update
-                needs_position_simulation = self.nodes[node_id].get("pos") is None
-            
-            # Run position simulation if needed
-            if needs_position_simulation:
-                self._simulate_position_for_node(node_id)
-            
+                # Convert GPS coordinates to map coordinates
+                map_y, map_x = lat, lon  # Simplified mapping for demo
+                self.nodes[node_id]["pos"] = (map_y, map_x)
+
             # Always update the node's status text
             status_text = "Active"
             if status_data.get('armed', False):
                 status_text = f"ARMED [{status_data.get('flight_mode', 'UNKNOWN')}]"
             else:
                 status_text = f"DISARMED [{status_data.get('flight_mode', 'UNKNOWN')}]"
-            
-            if self.nodes[node_id]["status"] != status_text:
-                self.nodes[node_id]["status"] = status_text
-            
+
+            self.nodes[node_id]["status"] = status_text
+
             # Update last seen timestamp
             self.nodes[node_id]["last_seen"] = time.time()
-            
-            # Redraw map if needed
+
+            # Always redraw regardless of position or status changes
             self._redraw()
 
-    def _simulate_position_for_node(self, node_id):
-        """Simulate position for a single node"""
-        if node_id not in self.nodes:
-            return
-        
-        # Center coordinates (Taiwan coordinates)
-        center_lat = 24.7739578
-        center_lon = 121.0455114
-        
-        # Set up spacing for grid pattern (in degrees)
-        lat_delta = 0.0002  # Approx. 22 meters between nodes
-        lon_delta = 0.0003  # Approx. 33 meters between nodes
-        
-        # Calculate grid position based on node ID
-        row = (node_id - 1) // 3    # 0, 0, 0, 1, 1, 1, 2, 2, 2, ...
-        col = (node_id - 1) % 3     # 0, 1, 2, 0, 1, 2, 0, 1, 2, ...
-        
-        # Calculate offset from center
-        lat_offset = (row - 1) * lat_delta  # Center row (1) has no offset
-        lon_offset = (col - 1) * lon_delta  # Center col (1) has no offset
-        
-        # Apply offset to center coordinates
-        latitude = center_lat + lat_offset
-        longitude = center_lon + lon_offset
-        
-        # Store position (note that we store as (lat, lon) for the map)
-        self.nodes[node_id]["pos"] = (latitude, longitude)
-        
-        print(f"Simulated position for Node {node_id}: ({latitude}, {longitude})")
+    def generate_random_position(self):
+        """Generate a random position within the specified latitude and longitude ranges"""
+        # Latitude range: [24.7727962, 24.7732732]
+        # Longitude range: [121.0449733, 121.0452793]
+        lat = random.uniform(24.7727962, 24.7732732)
+        lon = random.uniform(121.0449733, 121.0452793)
+        return (lat, lon)
 
-    def simulate_node_positions(self):
-        """
-        Simulate node positions in a grid pattern around specific GPS coordinates
-        for all nodes that don't have positions yet
+    def assign_positions_to_nodes(self, nodes):
+        """Assign positions to all nodes"""
+        print("[DEBUG] Assigning forced positions to nodes")
         
-        Centered at [24.7739578, 121.0455114] with small offsets for each node
-        """
-        # For each node without a position, call the single-node simulation function
-        for node_id, node in self.nodes.items():
-            if node["pos"] is None:  # Only position nodes that don't have positions yet
-                self._simulate_position_for_node(node_id)
+        for node_id, node in nodes.items():
+            # Generate a position if the node doesn't have one
+            if node["pos"] is None:
+                node["pos"] = self.generate_random_position()
+                print(f"[DEBUG] Assigned new position to Node {node_id}: {node['pos']}")
+            else:
+                # If the node already has a position, make sure it's within our bounds
+                current_lat, current_lon = node["pos"]
+                if (current_lat < 24.7727962 or current_lat > 24.7732732 or
+                    current_lon < 121.0449733 or current_lon > 121.0452793):
+                    node["pos"] = self.generate_random_position()
+                    print(f"[DEBUG] Replaced out-of-bounds position for Node {node_id} with: {node['pos']}")
         
-        # Redraw the map with the new positions
-        self._redraw()
-
-    def simulate_drone_movement(self):
-        """Simulate drone position changes over time within a specific geographic area"""
-        # Central coordinates for the simulation area (Hsinchu region)
-        center_lat = 24.7739578
-        center_lon = 121.0455114
-        
-        # Simulation range (approximately 500 meters in each direction)
-        # 0.001 degrees is roughly 111 meters for latitude
-        # 0.001 degrees longitude varies by latitude but is roughly 111*cos(latitude) meters
-        lat_range = 0.0045  # About 500m in latitude
-        lon_range = 0.0054  # About 500m in longitude at this latitude
-        
-        import random
-        import math
-        
-        for node_id in self.nodes:
-            if node_id in self.drone_statuses:
-                # Only simulate position if we have a drone status for this node
-                status = self.drone_statuses[node_id]
-                
-                # Get current position or initialize a new one
-                current_pos = self.nodes[node_id].get("pos")
-                if current_pos is None:
-                    # Initialize position around the center with an offset based on node_id
-                    # This distributes drones around the center point
-                    offset_factor = 0.2  # Controls how spread out drones are initially
-                    offset_lat = (((node_id * 17) % 10) - 5) * offset_factor * lat_range / 10
-                    offset_lon = (((node_id * 23) % 10) - 5) * offset_factor * lon_range / 10
-                    
-                    # Set initial position
-                    init_lat = center_lat + offset_lat
-                    init_lon = center_lon + offset_lon
-                    self.nodes[node_id]["pos"] = (init_lat, init_lon)
-                    
-                    # Log the initial position
-                    print(f"Node {node_id} initial position: ({init_lat:.7f}, {init_lon:.7f})")
-                else:
-                    # Current position
-                    cur_lat, cur_lon = current_pos
-                    
-                    # Default small random movement (for unarmed drones or no heading)
-                    delta_lat = random.uniform(-0.000005, 0.000005)
-                    delta_lon = random.uniform(-0.000005, 0.000005)
-                    
-                    # Apply movement based on drone status
-                    if status.get('armed', False):
-                        # Larger movement if armed
-                        movement_scale = 10.0  # Increase movement speed when armed
-                        
-                        # Movement based on heading if available
-                        heading = status.get('heading')
-                        if heading is not None:
-                            # Convert heading to radians and calculate direction
-                            heading_rad = math.radians(heading)
-                            speed = status.get('groundspeed', 0.0001)
-                            if speed < 0.0001:
-                                speed = 0.0001
-                            
-                            # Calculate movement direction
-                            # Note: Heading 0 is North, 90 is East, etc.
-                            # In geographic coordinates, moving North increases latitude
-                            # and moving East increases longitude
-                            speed_factor = speed * 0.000009  # Scale speed to coordinate changes
-                            
-                            # Override random movement with directed movement
-                            delta_lat = speed_factor * math.cos(heading_rad)
-                            delta_lon = speed_factor * math.sin(heading_rad)
-                        else:
-                            # If no heading but armed, make larger random movements
-                            delta_lat = random.uniform(-0.00005, 0.00005) * movement_scale
-                            delta_lon = random.uniform(-0.00005, 0.00005) * movement_scale
-                    
-                    # Calculate new position
-                    new_lat = cur_lat + delta_lat
-                    new_lon = cur_lon + delta_lon
-                    
-                    # Keep within the simulation bounds
-                    new_lat = max(center_lat - lat_range, min(center_lat + lat_range, new_lat))
-                    new_lon = max(center_lon - lon_range, min(center_lon + lon_range, new_lon))
-                    
-                    # Update position
-                    self.nodes[node_id]["pos"] = (new_lat, new_lon)
-                    
-                    # Update position in drone status for other components
-                    if status.get('position') is None:
-                        status['position'] = [new_lat, new_lon]
-                    else:
-                        status['position'][0] = new_lat
-                        status['position'][1] = new_lon
-        
-        # Redraw the map with new positions
-        self._redraw()
+        return nodes
 
     def _redraw(self):
+        print("[DEBUG] Starting map redraw...")
+        
+        # Log all nodes and their positions
+        print("[DEBUG] Current nodes status before forcing positions:")
+        for node_id, node in self.nodes.items():
+            pos_status = f"{node['pos']}" if node['pos'] is not None else "No position"
+            print(f"[DEBUG]   Node {node_id}: {pos_status}, Master: {node['is_master']}, Status: {node['status']}")
+        
         # Create a new map
         self.map = folium.Map(
-            location=[24.7736084, 121.0415506],
-            zoom_start=18,
+            location=[24.7730347, 121.0451263],  # Center of our area
+            zoom_start=19,
             tiles='CartoDB positron'
         )
 
+        # TODO: Force node position to be simulated position
+        # Implementation of the TODO - force positions for all nodes
+        # self.nodes = self.assign_positions_to_nodes(self.nodes)
+        
+        # Log all nodes and their positions after forcing
+        print("[DEBUG] Current nodes status after forcing positions:")
+        for node_id, node in self.nodes.items():
+            pos_status = f"{node['pos']}" if node['pos'] is not None else "Still no position"
+            print(f"[DEBUG]   Node {node_id}: {pos_status}, Master: {node['is_master']}, Status: {node['status']}")
+
         # Draw connections between nodes with valid positions
         nodes_with_pos = [(id, node) for id, node in self.nodes.items()
-                         if node["pos"] is not None]
+                        if node["pos"] is not None]
+        
+        print(f"[DEBUG] Found {len(nodes_with_pos)} nodes with valid positions")
 
         for i in range(len(nodes_with_pos)):
             for j in range(i + 1, len(nodes_with_pos)):
                 node1 = nodes_with_pos[i][1]
                 node2 = nodes_with_pos[j][1]
+                node1_id = nodes_with_pos[i][0]
+                node2_id = nodes_with_pos[j][0]
+                print(f"[DEBUG] Drawing connection between Node {node1_id} {node1['pos']} and Node {node2_id} {node2['pos']}")
                 folium.PolyLine(
                     locations=[node1["pos"], node2["pos"]],
                     color='gray',
@@ -375,13 +257,14 @@ class NetworkVisualizerWidget(QWidget):
         # Add markers for nodes with positions
         for node_id, node in self.nodes.items():
             if node["pos"] is not None:
+                print(f"[DEBUG] Adding marker for Node {node_id} at position {node['pos']}")
                 # Choose icon color based on master status
                 icon_color = 'red' if node["is_master"] else 'blue'
                 status_text = "Master" if node["is_master"] else "Node"
-
+                
                 # Create custom popup with detailed drone status if available
                 drone_status = self.drone_statuses.get(node_id, {})
-
+                
                 # Basic popup information
                 popup_html = f"""
                 <div style="width: 250px; font-family: Arial, sans-serif;">
@@ -392,30 +275,30 @@ class NetworkVisualizerWidget(QWidget):
                         <b>IP:</b> 192.168.199.{node_id}<br>
                         <b>Status:</b> {node["status"]}<br>
                 """
-
+                
                 # Add detailed drone status if available
                 if drone_status:
                     # Format additional status information
                     altitude = drone_status.get('altitude', 'N/A')
                     if isinstance(altitude, (int, float)):
                         altitude = f"{altitude:.1f}m"
-
+                        
                     flight_mode = drone_status.get('flight_mode', 'Unknown')
                     armed = "ARMED" if drone_status.get('armed', False) else "DISARMED"
-
+                    
                     position = drone_status.get('position', None)
                     position_str = "Unknown"
                     if position and len(position) == 2:
                         lat, lon = position
                         if isinstance(lat, (int, float)) and isinstance(lon, (int, float)):
                             position_str = f"{lat:.6f}, {lon:.6f}"
-
+                    
                     heading = drone_status.get('heading', None)
                     heading_str = f"{heading}°" if heading is not None else "N/A"
-
+                    
                     groundspeed = drone_status.get('groundspeed', None)
                     groundspeed_str = f"{groundspeed:.1f} m/s" if groundspeed is not None else "N/A"
-
+                    
                     # Add GPS information if available
                     gps_info = drone_status.get('gps', {})
                     gps_str = "N/A"
@@ -423,27 +306,27 @@ class NetworkVisualizerWidget(QWidget):
                         fix_type = gps_info.get('fix_type', 'Unknown')
                         satellites = gps_info.get('satellites_visible', 'Unknown')
                         gps_str = f"Fix: {fix_type}, Satellites: {satellites}"
-
+                    
                     # Add battery information if available
                     battery_info = drone_status.get('battery', {})
                     battery_str = "N/A"
                     if battery_info:
                         percent = battery_info.get('percentage')
                         voltage = battery_info.get('voltage')
-
+                        
                         battery_parts = []
                         if percent is not None:
                             battery_parts.append(f"{percent}%")
                         if voltage is not None:
                             voltage_val = voltage / 1000 if voltage > 100 else voltage  # Convert from mV if needed
                             battery_parts.append(f"{voltage_val:.2f}V")
-
+                        
                         if battery_parts:
                             battery_str = ", ".join(battery_parts)
-
+                    
                     # System status
                     system_status = drone_status.get('system_status', 'Unknown')
-
+                    
                     # Add the detailed drone information to popup
                     popup_html += f"""
                         <div style="margin-top: 10px; border-top: 1px solid #eee; padding-top: 5px;">
@@ -458,21 +341,28 @@ class NetworkVisualizerWidget(QWidget):
                             <b>System Status:</b> {system_status}<br>
                         </div>
                     """
-
+                
                 # Close the popup div
                 popup_html += """
                     </div>
                 </div>
                 """
-
+                
                 # Add marker to map
                 folium.Marker(
                     location=node["pos"],
                     popup=folium.Popup(popup_html, max_width=300),
                     tooltip=f"192.168.199.{node_id} - Click for details",
-                    icon=folium.Icon(color=icon_color, icon=self.icons[3])
+                    icon=folium.Icon(color=icon_color, icon=self.icons[9])
                 ).add_to(self.map)
+            else:
+                print(f"[DEBUG] Node {node_id} still has no position after forcing, skipping marker")
 
+        # Display the map
+        data = io.BytesIO()
+        self.map.save(data, close_file=False)
+        self.web_view.setHtml(data.getvalue().decode())
+        print("[DEBUG] Map redraw completed")
 
 
 class NetworkMonitorThread(QThread):
@@ -655,9 +545,8 @@ class MonitorGUI(QMainWindow):
 
         # Log initial message
         self.log_message("Network Monitor started successfully")
-        
-        # Uncomment this for testing if you don't have real position data
-        QTimer.singleShot(2000, self.network_viz.simulate_node_positions)
+
+
 
     def update_status_display(self):
         """Update the status display text with current node information"""
