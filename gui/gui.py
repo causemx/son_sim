@@ -12,7 +12,12 @@ from PyQt5.QtWidgets import (
     QWidget,
     QVBoxLayout,
     QTextEdit,
-    QDockWidget
+    QDockWidget,
+    QPushButton,
+    QGroupBox,
+    QGridLayout,
+    QLabel,
+    QMessageBox
 )
 from PyQt5.QtCore import (
     pyqtSignal,
@@ -378,11 +383,11 @@ class NetworkMonitorThread(QThread):
     def __init__(self, parent=None):
         super().__init__(parent)
         # Updated IP addresses for outside network communication
-        self.gui_host = '192.168.1.2'     # GUI's outside IP
-        # self.gui_host = 'localhost'
+        # self.gui_host = '192.168.1.2'     # GUI's outside IP
+        self.gui_host = 'localhost'
         self.gui_port = 5567              # GUI's port
-        self.handler_host = '192.168.1.1' # Handler's outside IP
-        # self.handler_host = 'localhost'
+        # self.handler_host = '192.168.1.1' # Handler's outside IP
+        self.handler_host = 'localhost'
         self.handler_port = 5566          # Handler's outside port
 
         # Create and bind socket
@@ -428,6 +433,34 @@ class NetworkMonitorThread(QThread):
                 logger.error(f"Failed to send connection message (attempt {attempt + 1}): {e}")
                 if attempt < max_retries - 1:
                     time.sleep(retry_delay)
+    
+    def send_command(self, command_type, target_node=None, params=None):
+        """Send a command to the handler"""
+        try:
+            message = {
+                'type': 'GUI_COMMAND',
+                'data': {
+                    'command_type': command_type
+                }
+            }
+            
+            # Add target node if specified
+            if target_node is not None:
+                message['data']['target_node'] = target_node
+                
+            # Add any additional parameters
+            if params:
+                message['data'].update(params)
+                
+            self.socket.sendto(
+                json.dumps(message).encode(),
+                (self.handler_host, self.handler_port)
+            )
+            logger.info(f"Sent command: {command_type} to handler")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to send command: {e}")
+            return False
 
     def process_message(self, message):
         msg_type = message['type']
@@ -467,11 +500,266 @@ class NetworkMonitorThread(QThread):
         logger.info("NetworkMonitorThread stopped")
 
 
+class CommandsPanel(QWidget):
+    def __init__(self, monitor_thread, parent=None):
+        super().__init__(parent)
+        self.monitor_thread = monitor_thread
+        self.selected_node = None
+        
+        # Main layout
+        layout = QVBoxLayout(self)
+        
+        # Create a group for node selection
+        node_group = QGroupBox("Node Selection")
+        node_layout = QGridLayout()
+        
+        self.node_label = QLabel("Selected Node: None")
+        node_layout.addWidget(self.node_label, 0, 0, 1, 2)
+        
+        # Add buttons for node selection
+        self.node_selector_label = QLabel("Select Node:")
+        node_layout.addWidget(self.node_selector_label, 1, 0, 1, 3)
+        
+        # Add buttons for common node IDs (1-10)
+        for i in range(10):
+            btn = QPushButton(f"Node {i+1}")
+            btn.clicked.connect(lambda checked, node_id=i+1: self.select_node(node_id))
+            node_layout.addWidget(btn, 2 + (i // 3), i % 3)
+        
+        # Add "All Nodes" button
+        all_nodes_btn = QPushButton("All Nodes")
+        all_nodes_btn.clicked.connect(lambda: self.select_node("all"))
+        all_nodes_btn.setStyleSheet("background-color: #d0e0ff;")  # Light blue background to highlight
+        node_layout.addWidget(all_nodes_btn, 2 + (10 // 3), 1)  # Position in the middle of the last row
+            
+        node_group.setLayout(node_layout)
+        layout.addWidget(node_group)
+        
+        # Create a group for drone commands
+        drone_group = QGroupBox("Drone Commands")
+        drone_layout = QVBoxLayout()
+        
+        # Arm/Disarm buttons
+        arm_btn = QPushButton("Arm Drone")
+        arm_btn.clicked.connect(self.arm_drone)
+        drone_layout.addWidget(arm_btn)
+        
+        disarm_btn = QPushButton("Disarm Drone")
+        disarm_btn.clicked.connect(self.disarm_drone)
+        drone_layout.addWidget(disarm_btn)
+        
+        # Add description label for default altitude
+        altitude_info = QLabel("Default altitude is 6m")
+        altitude_info.setStyleSheet("color: #666666; font-style: italic; font-size: 11px;")
+        drone_layout.addWidget(altitude_info)
+
+        # Takeoff and E-Stop buttons
+        takeoff_btn = QPushButton("Takeoff Drone")
+        takeoff_btn.clicked.connect(self.takeoff_drone)
+        drone_layout.addWidget(takeoff_btn)
+        
+        estop_btn = QPushButton("E-Stop")
+        estop_btn.setStyleSheet("background-color: #ffcccc; font-weight: bold;")  # Light red background
+        estop_btn.clicked.connect(self.emergency_stop)
+        drone_layout.addWidget(estop_btn)
+        
+        # Flight mode buttons (grid layout)
+        flight_mode_group = QGroupBox("Flight Modes")
+        flight_mode_layout = QGridLayout()
+        
+        # Common flight modes
+        flight_modes = ["GUIDED", "AUTO", "LOITER", "RTL", "LAND", "STABILIZE"]
+        for i, mode in enumerate(flight_modes):
+            btn = QPushButton(mode)
+            btn.clicked.connect(lambda checked, mode=mode: self.set_flight_mode(mode))
+            flight_mode_layout.addWidget(btn, i // 3, i % 3)
+            
+        flight_mode_group.setLayout(flight_mode_layout)
+        drone_layout.addWidget(flight_mode_group)
+        
+        drone_group.setLayout(drone_layout)
+        layout.addWidget(drone_group)
+        
+        # Create a group for network commands
+        network_group = QGroupBox("Network Commands")
+        network_layout = QVBoxLayout()
+        
+        # Network-wide command buttons
+        force_master_btn = QPushButton("Force Master Election")
+        force_master_btn.clicked.connect(self.force_master_election)
+        network_layout.addWidget(force_master_btn)
+        
+        refresh_btn = QPushButton("Refresh Map")
+        refresh_btn.clicked.connect(self.refresh_map)
+        network_layout.addWidget(refresh_btn)
+        
+        network_group.setLayout(network_layout)
+        layout.addWidget(network_group)
+        
+        # Add a spacer at the bottom
+        layout.addStretch()
+        
+        # Set styling
+        self.setStyleSheet("""
+            QPushButton {
+                padding: 5px;
+                font-size: 12px;
+                background-color: #f0f0f0;
+            }
+            QGroupBox {
+                font-weight: bold;
+                border: 1px solid gray;
+                border-radius: 5px;
+                margin-top: 10px;
+            }
+            QGroupBox::title {
+                subcontrol-origin: margin;
+                left: 10px;
+                padding: 0 3px 0 3px;
+            }
+        """)
+    
+    def select_node(self, node_id):
+        """Select a node for command targeting"""
+        self.selected_node = node_id
+        if node_id == "all":
+            self.node_label.setText("Selected Node: All Nodes")
+            logger.info("Selected all nodes for command targeting")
+        else:
+            self.node_label.setText(f"Selected Node: {node_id}")
+            logger.info(f"Selected node {node_id} for command targeting")
+    
+    def arm_drone(self):
+        """Send arm command to the selected drone"""
+        if self.selected_node is None:
+            self.show_error("Please select a node first")
+            return
+            
+        if self.selected_node == "all":
+            reply = QMessageBox.question(
+                self, 
+                'Confirm Multiple Arm',
+                'Are you sure you want to arm ALL drones?',
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No
+            )
+            
+            if reply == QMessageBox.Yes:
+                logger.info("Sending ARM command to all nodes")
+                self.monitor_thread.send_command("ARM_DRONE", "all")
+        else:
+            logger.info(f"Sending ARM command to node {self.selected_node}")
+            self.monitor_thread.send_command("ARM_DRONE", self.selected_node)
+    
+    def disarm_drone(self):
+        """Send disarm command to the selected drone"""
+        if self.selected_node is None:
+            self.show_error("Please select a node first")
+            return
+            
+        if self.selected_node == "all":
+            reply = QMessageBox.question(
+                self, 
+                'Confirm Multiple Disarm',
+                'Are you sure you want to disarm ALL drones?',
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No
+            )
+            
+            if reply == QMessageBox.Yes:
+                logger.info("Sending DISARM command to all nodes")
+                self.monitor_thread.send_command("DISARM_DRONE", "all")
+        else:
+            logger.info(f"Sending DISARM command to node {self.selected_node}")
+            self.monitor_thread.send_command("DISARM_DRONE", self.selected_node)
+    
+    def set_flight_mode(self, mode):
+        """Send flight mode command to the selected drone"""
+        if self.selected_node is None:
+            self.show_error("Please select a node first")
+            return
+            
+        if self.selected_node == "all":
+            reply = QMessageBox.question(
+                self, 
+                'Confirm Multiple Mode Change',
+                f'Are you sure you want to set ALL drones to {mode} mode?',
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No
+            )
+            
+            if reply == QMessageBox.Yes:
+                logger.info(f"Setting flight mode {mode} for all nodes")
+                self.monitor_thread.send_command("SET_FLIGHT_MODE", "all", {'mode': mode})
+        else:
+            logger.info(f"Setting flight mode {mode} for node {self.selected_node}")
+            self.monitor_thread.send_command("SET_FLIGHT_MODE", self.selected_node, {'mode': mode})
+    
+
+    def force_master_election(self):
+        """Force a new master election in the network"""
+        logger.info("Forcing master re-election")
+        self.monitor_thread.send_command("FORCE_MASTER_ELECTION")
+    
+    def refresh_map(self):
+        """Refresh the network map"""
+        logger.info("Refreshing network map")
+        self.monitor_thread.send_command("REFRESH_MAP")
+    
+    def takeoff_drone(self):
+        """Send takeoff command to the selected drone"""
+        if self.selected_node is None:
+            self.show_error("Please select a node first")
+            return
+            
+        if self.selected_node == "all":
+            reply = QMessageBox.question(
+                self, 
+                'Confirm Multiple Takeoff',
+                'Are you sure you want ALL drones to takeoff?',
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No
+            )
+            
+            if reply == QMessageBox.Yes:
+                logger.info("Sending TAKEOFF command to all nodes")
+                self.monitor_thread.send_command("TAKEOFF", "all")
+        else:
+            logger.info(f"Sending TAKEOFF command to node {self.selected_node}")
+            self.monitor_thread.send_command("TAKEOFF", self.selected_node)
+    
+    def emergency_stop(self):
+        """Send emergency stop command to the selected drone"""
+        if self.selected_node is None:
+            self.show_error("Please select a node first")
+            return
+            
+        # E-Stop is a critical command, so always confirm
+        confirm_msg = "Are you sure you want to emergency stop "
+        confirm_msg += "ALL drones?" if self.selected_node == "all" else f"drone {self.selected_node}?"
+        
+        reply = QMessageBox.warning(
+            self, 
+            'Confirm Emergency Stop',
+            confirm_msg,
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No
+        )
+        
+        if reply == QMessageBox.Yes:
+            if self.selected_node == "all":
+                logger.info("Sending EMERGENCY_STOP command to all nodes")
+                self.monitor_thread.send_command("EMERGENCY_STOP", "all")
+            else:
+                logger.info(f"Sending EMERGENCY_STOP command to node {self.selected_node}")
+                self.monitor_thread.send_command("EMERGENCY_STOP", self.selected_node)
+
+
 class MonitorGUI(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Network Monitor")
-        self.setMinimumSize(1000, 700)
+        self.setMinimumSize(1200, 700)
 
         # Create central widget with the map
         self.network_viz = NetworkVisualizerWidget()
@@ -490,7 +778,8 @@ class MonitorGUI(QMainWindow):
         self.log_text.setReadOnly(True)
         self.log_text.setStyleSheet("""
             font-size: 14px;
-            padding: 5px;
+            padding: 8px;
+            line-height: 1.4;
         """)
         event_log_layout.addWidget(self.log_text)
         self.event_log_dock.setWidget(event_log_widget)
@@ -508,31 +797,39 @@ class MonitorGUI(QMainWindow):
         self.status_text.setReadOnly(True)
         self.status_text.setStyleSheet("""
             font-size: 14px;
-            padding: 5px;
+            padding: 8px;
+            line-height: 1.4;
         """)
         node_status_layout.addWidget(self.status_text)
         self.node_status_dock.setWidget(node_status_widget)
 
+        # Create Commands dock widget on the right side
+        self.commands_dock = QDockWidget("Commands", self)
+        self.commands_dock.setAllowedAreas(Qt.LeftDockWidgetArea | Qt.RightDockWidgetArea)
+        self.commands_dock.setFeatures(QDockWidget.DockWidgetFloatable |
+                                     QDockWidget.DockWidgetMovable)
+        
+        # Start monitor thread
+        self.monitor_thread = NetworkMonitorThread(self)
+        
+        # Create the commands panel and add it to the dock
+        self.commands_panel = CommandsPanel(self.monitor_thread)
+        self.commands_dock.setWidget(self.commands_panel)
+        
         # Add dock widgets to the main window
         self.addDockWidget(Qt.LeftDockWidgetArea, self.node_status_dock)
         self.addDockWidget(Qt.LeftDockWidgetArea, self.event_log_dock)
+        self.addDockWidget(Qt.RightDockWidgetArea, self.commands_dock)
 
         # Set initial sizes for the dock widgets
         self.resizeDocks([self.node_status_dock, self.event_log_dock],
-                        [200, 200], Qt.Horizontal)
+                        [300, 300], Qt.Horizontal)
+        self.resizeDocks([self.commands_dock], [250], Qt.Horizontal)
 
         # Initialize node status dictionary
         self.node_statuses = {}
 
-        # Create a timer for simulating drone movement if no real position data
-        """
-        self.position_timer = QTimer(self)
-        self.position_timer.timeout.connect(self.network_viz.simulate_drone_movement)
-        self.position_timer.start(2000)  # Update every second
-        """
-
-        # Start monitor thread
-        self.monitor_thread = NetworkMonitorThread(self)
+        # Connect monitor thread signals
         self.monitor_thread.message_received.connect(self.log_message)
         self.monitor_thread.node_status_changed.connect(self.update_node_status)
         self.monitor_thread.node_added.connect(self.add_node)
@@ -545,7 +842,6 @@ class MonitorGUI(QMainWindow):
 
         # Log initial message
         self.log_message("Network Monitor started successfully")
-
 
 
     def update_status_display(self):
