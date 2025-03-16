@@ -712,21 +712,24 @@ class CommandsPanel(QWidget):
             self.show_error("Please select a node first")
             return
             
+        # Default altitude
+        altitude = 6.0
+            
         if self.selected_node == "all":
             reply = QMessageBox.question(
                 self, 
                 'Confirm Multiple Takeoff',
-                'Are you sure you want ALL drones to takeoff?',
+                f'Are you sure you want ALL drones to takeoff to {altitude}m?',
                 QMessageBox.Yes | QMessageBox.No,
                 QMessageBox.No
             )
             
             if reply == QMessageBox.Yes:
-                logger.info("Sending TAKEOFF command to all nodes")
-                self.monitor_thread.send_command("TAKEOFF", "all")
+                logger.info(f"Sending TAKEOFF command to all nodes (altitude: {altitude}m)")
+                self.monitor_thread.send_command("TAKEOFF", "all", {'altitude': altitude})
         else:
-            logger.info(f"Sending TAKEOFF command to node {self.selected_node}")
-            self.monitor_thread.send_command("TAKEOFF", self.selected_node)
+            logger.info(f"Sending TAKEOFF command to node {self.selected_node} (altitude: {altitude}m)")
+            self.monitor_thread.send_command("TAKEOFF", self.selected_node, {'altitude': altitude})
     
     def emergency_stop(self):
         """Send emergency stop command to the selected drone"""

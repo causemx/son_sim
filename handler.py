@@ -620,27 +620,238 @@ class NetworkHandler:
                     'level': 'info'
                 })
 
+    def process_gui_message(self, message, addr):
+        """Process incoming messages from the GUI"""
+        msg_type = message.get('type')
+        data = message.get('data', {})
+        
+        if msg_type == 'GUI_CONNECTED':
+            logging.info("GUI connected - sending network state")
+            self.send_network_state()
+            return
+            
+        if msg_type != 'GUI_COMMAND':
+            logging.warning(f"Received unknown message type from GUI: {msg_type}")
+            return
+            
+        command_type = data.get('command_type')
+        target_node = data.get('target_node')
+        
+        logging.info(f"Received GUI command: {command_type}, target: {target_node}")
+        
+        # Process different command types
+        if command_type == 'ARM_DRONE':
+            if target_node == 'all':
+                # Send arm command to all nodes
+                for node_id in self.known_nodes:
+                    self.send_drone_command(node_id, 'arm')
+                
+                self.send_to_gui('LOG', {
+                    'message': "Sending ARM command to all nodes"
+                })
+            else:
+                # Send arm command to specific node
+                node_id = int(target_node)
+                if node_id in self.known_nodes:
+                    self.send_drone_command(node_id, 'arm')
+                    
+                    self.send_to_gui('LOG', {
+                        'message': f"Sending ARM command to node {node_id}"
+                    })
+                else:
+                    self.send_to_gui('LOG', {
+                        'message': f"Error: Node {node_id} not found",
+                        'level': 'error'
+                    })
+        
+        elif command_type == 'DISARM_DRONE':
+            if target_node == 'all':
+                # Send disarm command to all nodes
+                for node_id in self.known_nodes:
+                    self.send_drone_command(node_id, 'disarm')
+                
+                self.send_to_gui('LOG', {
+                    'message': "Sending DISARM command to all nodes"
+                })
+            else:
+                # Send disarm command to specific node
+                node_id = int(target_node)
+                if node_id in self.known_nodes:
+                    self.send_drone_command(node_id, 'disarm')
+                    
+                    self.send_to_gui('LOG', {
+                        'message': f"Sending DISARM command to node {node_id}"
+                    })
+                else:
+                    self.send_to_gui('LOG', {
+                        'message': f"Error: Node {node_id} not found",
+                        'level': 'error'
+                    })
+        
+        elif command_type == 'SET_FLIGHT_MODE':
+            mode = data.get('mode')
+            if not mode:
+                self.send_to_gui('LOG', {
+                    'message': "Error: No flight mode specified",
+                    'level': 'error'
+                })
+                return
+                
+            if target_node == 'all':
+                # Send mode command to all nodes
+                for node_id in self.known_nodes:
+                    self.send_drone_command(node_id, 'set_mode', {'mode': mode})
+                
+                self.send_to_gui('LOG', {
+                    'message': f"Setting all nodes to {mode} mode"
+                })
+            else:
+                # Send mode command to specific node
+                node_id = int(target_node)
+                if node_id in self.known_nodes:
+                    self.send_drone_command(node_id, 'set_mode', {'mode': mode})
+                    
+                    self.send_to_gui('LOG', {
+                        'message': f"Setting node {node_id} to {mode} mode"
+                    })
+                else:
+                    self.send_to_gui('LOG', {
+                        'message': f"Error: Node {node_id} not found",
+                        'level': 'error'
+                    })
+        
+        elif command_type == 'TAKEOFF':
+            # Default altitude if not specified
+            altitude = data.get('altitude', 6.0)
+                
+            if target_node == 'all':
+                # Send takeoff command to all nodes
+                for node_id in self.known_nodes:
+                    self.send_drone_command(node_id, 'takeoff', {'altitude': altitude})
+                
+                self.send_to_gui('LOG', {
+                    'message': f"Commanding all nodes to takeoff to altitude {altitude}m"
+                })
+            else:
+                # Send takeoff command to specific node
+                node_id = int(target_node)
+                if node_id in self.known_nodes:
+                    self.send_drone_command(node_id, 'takeoff', {'altitude': altitude})
+                    
+                    self.send_to_gui('LOG', {
+                        'message': f"Commanding node {node_id} to takeoff to altitude {altitude}m"
+                    })
+                else:
+                    self.send_to_gui('LOG', {
+                        'message': f"Error: Node {node_id} not found",
+                        'level': 'error'
+                    })
+        
+        elif command_type == 'EMERGENCY_STOP':
+            if target_node == 'all':
+                # Send emergency stop to all nodes
+                # First set all to BRAKE mode
+                for node_id in self.known_nodes:
+                    self.send_drone_command(node_id, 'set_mode', {'mode': 'BRAKE'})
+                
+                self.send_to_gui('LOG', {
+                    'message': "EMERGENCY STOP issued for all nodes - setting to BRAKE mode",
+                    'level': 'warning'
+                })
+                
+                # Then attempt to disarm all after a short delay
+                time.sleep(1.0)
+                for node_id in self.known_nodes:
+                    self.send_drone_command(node_id, 'disarm')
+                    
+                self.send_to_gui('LOG', {
+                    'message': "Attempting to disarm all nodes",
+                    'level': 'warning'
+                })
+            else:
+                # Send emergency stop to specific node
+                node_id = int(target_node)
+                if node_id in self.known_nodes:
+                    # First set to BRAKE mode
+                    self.send_drone_command(node_id, 'set_mode', {'mode': 'BRAKE'})
+                    
+                    self.send_to_gui('LOG', {
+                        'message': f"EMERGENCY STOP issued for node {node_id} - setting to BRAKE mode",
+                        'level': 'warning'
+                    })
+                    
+                    # Then attempt to disarm after a short delay
+                    time.sleep(1.0)
+                    self.send_drone_command(node_id, 'disarm')
+                    
+                    self.send_to_gui('LOG', {
+                        'message': f"Attempting to disarm node {node_id}",
+                        'level': 'warning'
+                    })
+                else:
+                    self.send_to_gui('LOG', {
+                        'message': f"Error: Node {node_id} not found",
+                        'level': 'error'
+                    })
+        
+        elif command_type == 'FORCE_MASTER_ELECTION':
+            # Force a new master election
+            logging.info("GUI requested forced master election")
+            
+            self.send_to_gui('LOG', {
+                'message': "Initiating forced master election"
+            })
+            
+            self.assign_new_master()
+        
+        elif command_type == 'REFRESH_MAP':
+            # Refresh the network state to update the GUI map
+            logging.info("GUI requested network map refresh")
+            self.send_network_state()
+            
+            self.send_to_gui('LOG', {
+                'message': "Network map refreshed"
+            })
+        
+        else:
+            logging.warning(f"Unknown GUI command type: {command_type}")
+            self.send_to_gui('LOG', {
+                'message': f"Unknown command: {command_type}",
+                'level': 'error'
+            })
+    
     def run(self):
         self.is_running = True
-        
+    
         while self.is_running:
             try:
-                # Check for node messages
-                data, addr = self.node_socket.recvfrom(1024)
-                message = json.loads(data.decode())
-                
-                if message['type'] == 'GUI_CONNECTED':
-                    logging.info("GUI connected - sending network state")
-                    self.send_network_state()
-                else:
-                    self.process_node_message(message, addr)
+                # Check for node messages on mesh network
+                try:
+                    data, addr = self.node_socket.recvfrom(1024)
+                    message = json.loads(data.decode())
                     
-            except socket.timeout:
-                continue
+                    self.process_node_message(message, addr)
+                except socket.timeout:
+                    pass
+                except Exception as e:
+                    logging.error(f"Error processing node message: {e}")
+                
+                # Check for GUI messages on outside network
+                try:
+                    data, addr = self.gui_socket.recvfrom(1024)
+                    message = json.loads(data.decode())
+                    
+                    self.process_gui_message(message, addr)
+                except socket.timeout:
+                    pass
+                except Exception as e:
+                    logging.error(f"Error processing GUI message: {e}")
+                
+                time.sleep(0.01)  # Short sleep to prevent CPU overuse
+                
             except Exception as e:
-                logging.error(f"Error processing message: {e}")
-            
-            time.sleep(0.1)  # Prevent CPU overuse
+                logging.error(f"Error in main handler loop: {e}")
+                time.sleep(0.1)  # Prevent rapid error loops
 
     def _monitor_network(self):
         """Thread to monitor all nodes status"""
