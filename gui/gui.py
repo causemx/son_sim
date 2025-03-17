@@ -756,6 +756,11 @@ class CommandsPanel(QWidget):
             else:
                 logger.info(f"Sending EMERGENCY_STOP command to node {self.selected_node}")
                 self.monitor_thread.send_command("EMERGENCY_STOP", self.selected_node)
+    
+
+    def show_error(self, message):
+        """Show error message dialog"""
+        QMessageBox.critical(self, "Error", message)
 
 
 class MonitorGUI(QMainWindow):
