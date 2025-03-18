@@ -861,7 +861,7 @@ class MonitorGUI(QMainWindow):
         format_str = "{icon}  {ip:<16} | {role}\n"
 
         for node_id, status in sorted(self.node_statuses.items()):
-            icon = "👑" if status["is_master"] else "🤖"
+            icon = "🐔" if status["is_master"] else "🐣"
             ip = f"192.168.199.{node_id}"
             role = "Master" if status["is_master"] else "Regular"
 
