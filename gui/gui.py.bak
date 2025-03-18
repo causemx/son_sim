@@ -702,24 +702,21 @@ class CommandsPanel(QWidget):
             self.show_error("Please select a node first")
             return
             
-        # Default altitude
-        altitude = 6.0
-            
         if self.selected_node == "all":
             reply = QMessageBox.question(
                 self, 
                 'Confirm Multiple Takeoff',
-                f'Are you sure you want ALL drones to takeoff to {altitude}m?',
+                'Are you sure you want ALL drones to takeoff?',
                 QMessageBox.Yes | QMessageBox.No,
                 QMessageBox.No
             )
             
             if reply == QMessageBox.Yes:
-                logger.info(f"Sending TAKEOFF command to all nodes (altitude: {altitude}m)")
-                self.monitor_thread.send_command("TAKEOFF", "all", {'altitude': altitude})
+                logger.info("Sending TAKEOFF command to all nodes")
+                self.monitor_thread.send_command("TAKEOFF", "all")
         else:
-            logger.info(f"Sending TAKEOFF command to node {self.selected_node} (altitude: {altitude}m)")
-            self.monitor_thread.send_command("TAKEOFF", self.selected_node, {'altitude': altitude})
+            logger.info(f"Sending TAKEOFF command to node {self.selected_node}")
+            self.monitor_thread.send_command("TAKEOFF", self.selected_node)
     
     def emergency_stop(self):
         """Send emergency stop command to the selected drone"""
@@ -746,11 +743,6 @@ class CommandsPanel(QWidget):
             else:
                 logger.info(f"Sending EMERGENCY_STOP command to node {self.selected_node}")
                 self.monitor_thread.send_command("EMERGENCY_STOP", self.selected_node)
-    
-
-    def show_error(self, message):
-        """Show error message dialog"""
-        QMessageBox.critical(self, "Error", message)
 
 
 class MonitorGUI(QMainWindow):
@@ -859,7 +851,7 @@ class MonitorGUI(QMainWindow):
         format_str = "{icon}  {ip:<16} | {role}\n"
 
         for node_id, status in sorted(self.node_statuses.items()):
-            icon = "🐔" if status["is_master"] else "🐣"
+            icon = "👑" if status["is_master"] else "🤖"
             ip = f"192.168.199.{node_id}"
             role = "Master" if status["is_master"] else "Regular"
 
