@@ -380,6 +380,189 @@ class DroneController:
 
         return False
 
+    def fly_to_here(self, distance=5.0, max_retries=3):
+        """
+        Command the drone to fly to a location in the direction of current heading
+        
+        Args:
+            distance (float): Distance to fly in meters (default: 5.0m)
+            max_retries (int): Maximum number of retry attempts for commands
+            retry_delay (float): Delay between retries in seconds
+            timeout (int): Maximum time to wait for reaching the target in seconds
+            
+        Returns:
+            bool: True if command accepted and target reached, False otherwise
+        """
+        import math
+        import time
+        
+        if not self.drone:
+            logger.error("No drone connection")
+            return False
+        
+        # Get current position and heading
+        status = self.get_drone_status()
+        
+        if not status.get('position') or not status.get('heading'):
+            logger.error("Cannot get current position or heading")
+            return False
+        
+        current_lat, current_lon = status['position']
+        heading = status['heading']
+        
+        if heading is None:
+            logger.error("Cannot determine current heading")
+            return False
+        
+        # Convert heading to radians for calculation
+        heading_rad = math.radians(heading)
+        
+        # Earth radius in meters
+        earth_radius = 6378137.0
+        
+        # Calculate target position using great circle formula
+        # Convert distance from meters to radians
+        angular_distance = distance / earth_radius
+        
+        # Calculate target position
+        target_lat = math.asin(
+            math.sin(math.radians(current_lat)) * math.cos(angular_distance) +
+            math.cos(math.radians(current_lat)) * math.sin(angular_distance) * math.cos(heading_rad)
+        )
+        
+        target_lon = math.radians(current_lon) + math.atan2(
+            math.sin(heading_rad) * math.sin(angular_distance) * math.cos(math.radians(current_lat)),
+            math.cos(angular_distance) - math.sin(math.radians(current_lat)) * math.sin(target_lat)
+        )
+        
+        # Convert target position back to degrees
+        target_lat = math.degrees(target_lat)
+        target_lon = math.degrees(target_lon)
+        
+        logger.info(f"Current position: Lat {current_lat:.6f}, Lon {current_lon:.6f}, Heading {heading}°")
+        logger.info(f"Target position: Lat {target_lat:.6f}, Lon {target_lon:.6f}, Distance {distance}m")
+        
+        # Set flight mode to GUIDED
+        if not self.set_flight_mode(FlightMode.GUIDED):
+            logger.error("Failed to set GUIDED mode, aborting flight")
+            return False
+        
+        # Wait for mode change
+        time.sleep(1)
+        
+        # Check if drone is armed
+        if not self.is_armed:
+            logger.info("Drone not armed, attempting to arm...")
+            if not self.arm():
+                logger.error("Failed to arm drone, aborting flight")
+                return False
+            # Wait for arming
+            time.sleep(1)
+        
+        # Convert lat/lon to int format expected by MAVLink (degrees * 1e7)
+        lat_int = int(target_lat * 1e7)
+        lon_int = int(target_lon * 1e7)
+        
+        # Default altitude: use current + 2m if available, otherwise 10m
+        alt = (status.get('altitude', 0) + 2) if status.get('altitude') is not None else 10.0
+        
+        # Create mission item message for moving to target position
+        # We're using MAV_CMD_NAV_WAYPOINT command
+        mission_item = dialect.MAVLink_mission_item_int_message(
+            target_system=self.drone.target_system,
+            target_component=self.drone.target_component,
+            seq=0,                                   # Sequence number
+            frame=dialect.MAV_FRAME_GLOBAL_RELATIVE_ALT_INT,  # Altitude relative to home
+            command=dialect.MAV_CMD_NAV_WAYPOINT,    # Go to waypoint command
+            current=2,                               # Guided mode waypoint (2 indicates "guided mode")
+            autocontinue=1,                          # Auto continue to next waypoint
+            param1=0,                                # Hold time (seconds)
+            param2=2.0,                              # Acceptance radius (meters)
+            param3=0,                                # Pass by waypoint (0 = fixed location)
+            param4=0,                                # Desired yaw angle (NaN = unchanged)
+            x=lat_int,                               # Latitude (degrees * 1e7)
+            y=lon_int,                               # Longitude (degrees * 1e7)
+            z=alt                                    # Altitude (meters, relative to home)
+        )
+        
+
+        success = False
+   
+        # Send the mission item
+        self.drone.mav.send(mission_item)
+        
+        # Wait for acknowledgment 
+        ack = self.drone.recv_match(type='COMMAND_ACK', blocking=True, timeout=2.0)
+        
+        if ack and (ack.command == dialect.MAV_CMD_NAV_WAYPOINT or 
+                    ack.command == dialect.MAV_CMD_MISSION_START):
+            if ack.result == dialect.MAV_RESULT_ACCEPTED:
+                logger.success("Waypoint command accepted!")
+                success = True
+            else:
+                # Log the specific failure reason if available
+                result_name = dialect.enums['MAV_RESULT'][ack.result].name if ack.result in dialect.enums['MAV_RESULT'] else f"Unknown ({ack.result})"
+                logger.warning(f"Waypoint attempt failed: {result_name}")
+        else:
+            logger.warning("No acknowledgment received for waypoint")
+        
+        
+        if not success:
+            logger.error(f"Failed to send waypoint command after {max_retries} attempts")
+            return False
+        
+        
+        """
+        start_time = time.time()
+        reached_target = False
+        last_distance = float('inf')
+        
+        # Continue checking position until timeout or target reached
+        while time.time() - start_time < timeout and not reached_target:
+            # Get current position
+            status = self.get_drone_status()
+            
+            if status.get('position'):
+                current_lat, current_lon = status['position']
+                
+                # Calculate distance to target using Haversine formula
+                current_lat_rad = math.radians(current_lat)
+                current_lon_rad = math.radians(current_lon)
+                target_lat_rad = math.radians(target_lat)
+                target_lon_rad = math.radians(target_lon)
+                
+                # Haversine formula
+                dlon = target_lon_rad - current_lon_rad
+                dlat = target_lat_rad - current_lat_rad
+                a = math.sin(dlat/2)**2 + math.cos(current_lat_rad) * math.cos(target_lat_rad) * math.sin(dlon/2)**2
+                c = 2 * math.atan2(math.sqrt(a), math.sqrt(1-a))
+                distance_to_target = earth_radius * c  # in meters
+                
+                # Check if we're close enough to target (within 2m)
+                acceptance_radius = 2.0  # meters
+                if distance_to_target <= acceptance_radius:
+                    reached_target = True
+                    logger.success(f"Target reached! Final distance: {distance_to_target:.1f}m")
+                    break
+                
+                # Only log if distance has changed significantly
+                if abs(distance_to_target - last_distance) > 0.5:
+                    logger.info(f"Distance to target: {distance_to_target:.1f}m")
+                    last_distance = distance_to_target
+            
+            # Short sleep to prevent CPU overuse
+            time.sleep(0.5)
+        
+        # Check if we timed out
+        if not reached_target:
+            logger.warning(f"Timeout reached ({timeout}s). Drone did not reach target.")
+            return False
+        
+        logger.success("Fly to waypoint completed successfully!")
+        return True
+        """
+        
+
     def land(self, max_retries=3, retry_delay=2):
         """
         Command the drone to land with retry capability
@@ -656,6 +839,45 @@ class DroneShell(cmd.Cmd):
                 print("Drone disarmed successfully")
             else:
                 print("Disarming failed")
+
+    def do_flytohere(self, arg):
+        """
+        Command the drone to fly specified distance in current heading direction
+        Usage: flytohere [distance]
+        Example: flytohere 10       - Fly forward 10 meters
+        Default distance: 5 meters
+        """
+        if not self._check_connection():
+            return
+        
+        try:
+            # Parse distance argument if provided, otherwise use default
+            if arg:
+                distance = float(arg)
+            else:
+                distance = 5.0
+            
+            # Check if drone is armed
+            if not self.drone_controller.is_armed:
+                print("Arming drone...")
+                if not self.drone_controller.arm():
+                    print("Failed to arm drone. Aborting flight.")
+                    return
+                time.sleep(1)  # Wait a moment after arming
+
+            print(f"Flying {distance} meters in current heading direction...")
+            
+            # Call the fly_to_here method
+            if self.drone_controller.fly_to_here(distance=distance):
+                print(f"Flight completed successfully!")
+            else:
+                print("Flight command failed or target not reached")
+                
+        except ValueError:
+            print("Error: Invalid distance value. Usage: flytohere [distance]")
+            print("Example: flytohere 10  - Fly forward 10 meters")
+        except Exception as e:
+            print(f"Error executing flight command: {str(e)}")
 
     def do_mode(self, arg):
         """

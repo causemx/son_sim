@@ -75,7 +75,8 @@ class NetworkVisualizerWidget(QWidget):
         # Center the map on the midpoint of our coordinate space (3, 3)
         self.map = folium.Map(
             location=[24.7736084, 121.0415506],
-            zoom_start=14,
+            zoom_start=18,
+            max_zoom = 22,
             tiles='CartoDB positron'  # Light map style
         )
 
