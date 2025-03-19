@@ -76,7 +76,10 @@ class NetworkVisualizerWidget(QWidget):
         self.map = folium.Map(
             location=[24.7736084, 121.0415506],
             zoom_start=18,
-            max_zoom = 22,
+            max_zoom=22,
+            rotate=True,
+            rotateControl={ "closeOnZeroBearing": False },
+            touchRotate=True,
             tiles='CartoDB positron'  # Light map style
         )
 
@@ -103,6 +106,7 @@ class NetworkVisualizerWidget(QWidget):
         # Add scripts to control markers
         self.map._id = 'folium'  # Required for the map to be recognized by the script
         script = '''<script src="qrc:///qtwebchannel/qwebchannel.js"></script>
+        <script src="https://unpkg.com/leaflet-rotate@0.2.8/dist/leaflet-rotate-src.js"></script>
         <script>
         const startTime = Date.now();
         var polylines;
