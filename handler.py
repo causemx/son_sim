@@ -8,6 +8,7 @@ import logging
 import cmd
 import atexit
 import os
+import drone_v2x
 
 # Add terminal reset function that will run on exit
 def reset_terminal():
@@ -25,10 +26,11 @@ logging.basicConfig(
 )
 
 class NetworkHandler:
-    def __init__(self, mesh_ip='192.168.199.0', outside_ip='0.0.0.0'):
-        # Mesh network interface (for nodes)
-        self.mesh_host = mesh_ip
-        self.mesh_port = 5000
+    def __init__(self, outside_ip='0.0.0.0'):
+        # V2X communication settings
+        self.group = 1  # Fixed group for all nodes
+        self.handler_id = 0  # Handler's ID is always 0
+        self.node_group = 11
         
         # Outside network interface (for GUI)
         self.outside_host = outside_ip
@@ -56,17 +58,15 @@ class NetworkHandler:
         # Command response tracking
         self.command_responses = {}
         
-        # Setup socket for node communication (mesh network)
-        self.node_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        # Initialize drone_v2x
         try:
-            self.node_socket.bind((self.mesh_host, self.mesh_port))
-            self.node_socket.settimeout(0.1)
-            logging.info(f"Handler bound to mesh network: {self.mesh_host}:{self.mesh_port}")
-        except socket.error as e:
-            logging.error(f"Failed to bind mesh network socket: {e}")
+            drone_v2x.init()
+            logging.info("Handler initialized with V2X communication")
+        except Exception as e:
+            logging.error(f"Failed to initialize V2X communication: {e}")
             raise
         
-        # Setup socket for GUI communication (outside network)
+        # Setup socket for GUI communication (outside network) - this remains unchanged
         self.gui_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         try:
             self.gui_socket.bind((self.outside_host, self.outside_port))
@@ -124,21 +124,12 @@ class NetworkHandler:
         # Notify all nodes about new master
         message = {
             'type': 'NEW_MASTER',
-            'from': 0,  # From handler
+            'from': self.handler_id,  # From handler
             'data': {'master_id': new_master_id}
         }
 
-        # Broadcast to all known nodes using IP addresses
-        base_ip = '.'.join(self.mesh_host.split('.')[:-1])
-        for node_id in self.known_nodes:
-            try:
-                node_ip = f"{base_ip}.{node_id}"
-                self.node_socket.sendto(
-                    json.dumps(message).encode(),
-                    (node_ip, self.mesh_port)
-                )
-            except Exception as e:
-                logging.error(f"Error sending new master message to node {node_id}: {e}")
+        # Broadcast to all known nodes using node IDs
+        self.broadcast_to_nodes(message)
 
         # Update GUI about completion of transition and new master
         self.send_to_gui('MASTER_TRANSITION_END', {})
@@ -279,7 +270,7 @@ class NetworkHandler:
                 # Notify all nodes about selected master
                 message = {
                     'type': 'NEW_MASTER',
-                    'from': 0,
+                    'from': self.handler_id,
                     'data': {'master_id': new_master_id}
                 }
                 self.broadcast_to_nodes(message)
@@ -295,27 +286,26 @@ class NetworkHandler:
             self.initialization_phase = False
     
     def broadcast_to_nodes(self, message):
-        """Broadcast message to all known nodes"""
-        base_ip = '.'.join(self.mesh_host.split('.')[:-1])
+        """Broadcast message to all known nodes using V2X communication"""
         for node_id in self.known_nodes:
             try:
-                node_ip = f"{base_ip}.{node_id}"
-                self.node_socket.sendto(
-                    json.dumps(message).encode(),
-                    (node_ip, self.mesh_port)
-                )
+                # Format message as JSON
+                json_message = json.dumps(message)
+                # Send message to node with group 11, id node_id
+                drone_v2x.send(json_message, (self.node_group, node_id))
+                logging.debug(f"Broadcast message to node {node_id} (Group {self.node_group})")
             except Exception as e:
                 logging.error(f"Error broadcasting to node {node_id}: {e}")
 
     def send_drone_command(self, node_id, command, params=None):
-        """Send drone command to specific node"""
+        """Send drone command to specific node using V2X communication"""
         if node_id not in self.known_nodes:
             logging.error(f"Cannot send command to unknown node {node_id}")
             return False
 
         message = {
             'type': 'DRONE_COMMAND',
-            'from': 0,  # From handler
+            'from': self.handler_id,  # From handler
             'data': {
                 'command': command,
                 'params': params or {}
@@ -323,16 +313,12 @@ class NetworkHandler:
         }
 
         try:
-            # Construct node IP from base network
-            base_ip = '.'.join(self.mesh_host.split('.')[:-1])
-            node_ip = f"{base_ip}.{node_id}"
+            # Format message as JSON
+            json_message = json.dumps(message)
+            # Send message to node with group 11, id node_id
+            drone_v2x.send(json_message, (self.node_group, node_id))
             
-            self.node_socket.sendto(
-                json.dumps(message).encode(),
-                (node_ip, self.mesh_port)
-            )
-            
-            logging.info(f"Sent drone command '{command}' to Node {node_id}")
+            logging.info(f"Sent drone command '{command}' to Node {node_id} (Group {self.node_group})")
             return True
             
         except Exception as e:
@@ -451,7 +437,7 @@ class NetworkHandler:
             })
             
             self.send_to_gui('LOG', {
-                'message': f"Node {from_node} (Port {5000 + from_node}) joined network"
+                'message': f"Node {from_node} joined network"
             })
         
         # Handle different message types
@@ -612,7 +598,6 @@ class NetworkHandler:
                     pos_str = f"({lat:.6f}, {lon:.6f})"
                 
                 log_message = f"Node {from_node} status: {armed_status}, Mode: {mode}, Alt: {alt:.1f}m, Pos: {pos_str}"
-                # logging.info(log_message)
                 
                 # Send log message to GUI only for significant changes
                 self.send_to_gui('LOG', {
@@ -825,16 +810,19 @@ class NetworkHandler:
     
         while self.is_running:
             try:
-                # Check for node messages on mesh network
+                # Check for messages from nodes using V2X communication
                 try:
-                    data, addr = self.node_socket.recvfrom(1024)
-                    message = json.loads(data.decode())
+                    data, addr = drone_v2x.recv(1400)
+                    message = json.loads(data.decode().rstrip('\x00'))
                     
+                    print(f"data: {data}, addr: {addr}, mes: {message}")
+
+                    # Process the message
                     self.process_node_message(message, addr)
-                except socket.timeout:
-                    pass
                 except Exception as e:
-                    logging.error(f"Error processing node message: {e}")
+                    # No message or error
+                    if str(e) != "timed out": # Ignore timeout errors
+                        logging.error(f"Error processing node message: {e}")
                 
                 # Check for GUI messages on outside network
                 try:
@@ -871,7 +859,6 @@ class NetworkHandler:
     def stop(self):
         self.is_running = False
         try:
-            self.node_socket.close()
             self.gui_socket.close()
         except Exception:
             pass
@@ -892,6 +879,23 @@ class HandlerShell(cmd.Cmd):
     def emptyline(self):
         """Override emptyline to do nothing when Enter is pressed with no command"""
         pass
+        
+    def do_nodelist(self, arg):
+        """
+        Show information about valid node IDs in the network
+        """
+        print("\nNode Address Information:")
+        print("-" * 50)
+        print(f"Handler: Group {self.handler.group}, ID {self.handler.handler_id}")
+        print(f"Nodes: Group {self.handler.node_group}, Valid IDs: 11, 12, 13")
+        print("-" * 50)
+        print("Currently connected nodes:")
+        if self.handler.known_nodes:
+            for node_id in sorted(self.handler.known_nodes):
+                print(f"- Node {node_id}")
+        else:
+            print("- No nodes currently connected")
+        print()
 
     def do_nodes(self, arg):
         """
@@ -1173,44 +1177,6 @@ class HandlerShell(cmd.Cmd):
                 print("Error: Please provide a valid node ID")
                 print("Usage: status <node_id> or status all")
 
-    def do_detailed_status(self, arg):
-        """
-        Show detailed drone status for specified node
-        Usage: detailed_status <node_id>
-        Use 'detailed_status all' to show status for all nodes
-        """
-        if arg.lower() == 'all':
-            # Get status for all nodes
-            all_statuses = self.handler.get_node_status()
-            if not all_statuses:
-                print("No node status information available")
-                return
-                
-            print("\nDetailed Status for All Nodes:")
-            print("=" * 80)
-            
-            for node_id, status in all_statuses.items():
-                self._print_detailed_status(node_id, status)
-                print("-" * 80)
-        else:
-            # Get status for specific node
-            try:
-                node_id = int(arg)
-                if node_id in self.handler.known_nodes:
-                    status = self.handler.get_node_status(node_id)
-                    if status:
-                        print(f"\nDetailed Status for Node {node_id}:")
-                        print("=" * 80)
-                        self._print_detailed_status(node_id, status)
-                        print("=" * 80)
-                    else:
-                        print(f"No status information available for Node {node_id}")
-                else:
-                    print(f"Error: Node {node_id} is not connected")
-            except ValueError:
-                print("Error: Please provide a valid node ID")
-                print("Usage: detailed_status <node_id> or detailed_status all")
-
     def do_stop(self, arg):
         """
         Execute emergency stop on drones
@@ -1293,10 +1259,10 @@ def main():
         handler = NetworkHandler()
         handler.start()
 
-        print("\nHandler running on two interfaces:")
-        print(f"Mesh network: {handler.mesh_host}:{handler.mesh_port}")
-        print(f"Outside network: {handler.outside_host}:{handler.outside_port}")
-        print(f"Sending GUI updates to {handler.gui_host}:{handler.gui_port}")
+        print("\nHandler running with V2X communication:")
+        print(f"Group: {handler.group}, Handler ID: {handler.handler_id}")
+        print(f"Connecting to nodes in Group: {handler.node_group}, IDs: 11-13")
+        print(f"GUI updates sent to {handler.gui_host}:{handler.gui_port}")
         print("\nStarting interactive shell. Type 'help' for commands.")
         
         # Start interactive shell

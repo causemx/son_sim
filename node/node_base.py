@@ -1,8 +1,8 @@
-import socket
 import threading
 import time
 import json
 from enum import Enum
+import drone_v2x
 from controller import DroneController
 
 class NodeType(Enum):
@@ -22,20 +22,20 @@ class JSONEncoder(json.JSONEncoder):
         return super().default(obj)
 
 class Node:
-    def __init__(self, ip, handler_ip='192.168.199.0', handler_port=5000):
-        self.ip = ip
-        self.port = 5000  # Fixed port for all nodes
-        self.node_id = int(ip.split('.')[-1])  # Use last byte of IP as node ID
-        self.host = ip
-        self.handler_ip = handler_ip
-        self.handler_port = handler_port
-        self.nodes = {}  # {node_id: (host_ip, port)}
+    def __init__(self, node_id):
+        # Initialize with (group, id) addressing scheme
+        self.group = 11  # Fixed group for all nodes (11)
+        self.node_id = node_id
+        self.handler_group = 1  # Handler's fixed group
+        self.handler_id = 1     # Handler's fixed ID
+        self.nodes = {}  # {node_id: (group, id)}
         self.master_id = None
         self.is_running = False
-        self.socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        self.socket.bind((ip, self.port))
         self.is_master = False
         self.master_id = None
+
+        # Initialize v2x communication
+        drone_v2x.init()
 
         # Initialize drone controller
         self.drone_controller = DroneController(connection_string="udp:127.0.0.1:14650")
@@ -128,7 +128,7 @@ class Node:
                 time.sleep(1)  # Prevent tight loop in case of errors
 
     def _send_to_handler(self, message_type, data=None):
-        """Send message to handler"""
+        """Send message to handler using v2x communication"""
         message = {
             'type': message_type,
             'from': self.node_id,
@@ -137,10 +137,9 @@ class Node:
         try:
             # Use the custom encoder to handle Enum values and other custom objects
             json_message = json.dumps(message, cls=JSONEncoder)
-            self.socket.sendto(
-                json_message.encode(),
-                (self.handler_ip, self.handler_port)
-            )
+            # Send to handler with group 1, id 1
+            drone_v2x.send(json_message, (self.handler_group, self.handler_id))
+            print(f"Sent {message_type} to handler ({self.handler_group}, {self.handler_id})")
         except Exception as e:
             print(f"Error sending to handler: {e}")
 
@@ -245,10 +244,9 @@ class Node:
 
         return result
 
-
     def _broadcast_to_nodes(self, message_type, data=None):
         """Broadcast message to all known nodes"""
-        for node_id, (host, port) in self.nodes.items():
+        for node_id, (group, id) in self.nodes.items():
             message = {
                 'type': message_type,
                 'from': self.node_id,
@@ -257,14 +255,16 @@ class Node:
             try:
                 # Use the custom encoder for broadcasting
                 json_message = json.dumps(message, cls=JSONEncoder)
-                self.socket.sendto(json_message.encode(), (host, port))
+                drone_v2x.send(json_message, (group, id))
+                print(f"Broadcast {message_type} to node {node_id} ({group}, {id})")
             except Exception as e:
                 print(f"Error broadcasting to node {node_id}: {e}")
 
     def _handle_messages(self):
         while self.is_running:
             try:
-                data, addr = self.socket.recvfrom(1024)
+                data, addr = drone_v2x.recv(1400)
+                # Parse received JSON data
                 message = json.loads(data.decode())
                 self._process_message(message)
             except Exception as e:
@@ -323,10 +323,10 @@ class Node:
             self._send_to_handler(heartbeat_type, status_data)
             time.sleep(1)
 
-    def register_node(self, ip):
-        """Register another node using IP"""
-        node_id = int(ip.split('.')[-1])
-        self.nodes[node_id] = (ip, self.port)
+    def register_node(self, node_id):
+        """Register another node using node ID"""
+        # All nodes are in group 11
+        self.nodes[node_id] = (self.group, node_id)
 
     def stop(self):
         if self.is_running:
@@ -335,4 +335,3 @@ class Node:
                 self.drone_controller.cleanup()
             self._send_to_handler('NODE_SHUTDOWN')
         self.is_running = False
-        self.socket.close()

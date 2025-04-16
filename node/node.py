@@ -1,61 +1,56 @@
 from node_base import Node
 import sys
 import time
-import ipaddress
 
-def main(ip, handler_ip='192.168.199.0'):
-    # Create node with IP-based identification
-    node = Node(ip=ip, handler_ip=handler_ip)
+def main(node_id):
+    # Create node with node_id based identification
+    node = Node(node_id=node_id)
     
     # Register other possible nodes in network
-    base_ip = '.'.join(ip.split('.')[:-1])  # Get network prefix (e.g., "192.168.199")
-    for last_byte in range(1, 11):  # Nodes 1-10
-        node_ip = f"{base_ip}.{last_byte}"
-        if node_ip != ip:  # Don't register self
-            node.register_node(ip=node_ip)
+    # Nodes will have IDs from 11 to 13 in group 11
+    for other_id in range(11, 14):
+        if other_id != node_id:  # Don't register self
+            node.register_node(other_id)
     
     # Start node
     node.start()
     
     print("\nNode started:")
-    print(f"IP: {ip}")
-    print(f"ID: {ip.split('.')[-1]}")  # ID is last byte of IP
-    print(f"Handler: {handler_ip}\n")
+    print("Group: 11")
+    print(f"Node ID: {node_id}")
+    print("Handler: Group 1, ID 1\n")
     
     try:
         while True:
             time.sleep(1)
     except KeyboardInterrupt:
         node.stop()
-        print(f"\nNode on IP {ip} stopped")
+        print(f"\nNode {node_id} stopped")
 
-def validate_ip(ip):
-    """Validate IP address format and range"""
+def validate_node_id(node_id):
+    """Validate node ID format and range"""
     try:
-        # Check if it's a valid IP address
-        ipaddress.ip_address(ip)
-        
-        # Get the last byte and check range (1-10)
-        last_byte = int(ip.split('.')[-1])
-        if last_byte < 1 or last_byte > 10:
-            print("Error: Last byte of IP must be between 1 and 10")
+        # Convert to integer and check range (11-13)
+        node_id = int(node_id)
+        if node_id < 11 or node_id > 13:
+            print("Error: Node ID must be between 11 and 13")
             return False
             
         return True
         
     except ValueError:
-        print("Error: Invalid IP address format")
+        print("Error: Invalid node ID format, must be an integer")
         return False
 
 if __name__ == "__main__":
     if len(sys.argv) != 2:
-        print("Usage: python node.py <ip>")
-        print("Example: python node.py 192.168.199.1")
-        print("Note: Last byte of IP (1-9) will be used as node ID")
+        print("Usage: python node.py <node_id>")
+        print("Example: python node.py 11")
+        print("Note: Node ID must be between 11 and 13")
         sys.exit(1)
     
-    ip = sys.argv[1]
-    if validate_ip(ip):
-        main(ip)
+    node_id = sys.argv[1]
+    if validate_node_id(node_id):
+        main(int(node_id))
     else:
         sys.exit(1)
