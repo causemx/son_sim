@@ -171,7 +171,7 @@ class DroneController:
             self.drone = mavutil.mavlink_connection(self.connection_string)
             self.drone.wait_heartbeat()
             logger.success(f"Connected to drone! (system: {self.drone.target_system}, "
-                         f"component: {self.drone.target_component})")
+                           f"component: {self.drone.target_component})")
 
             # Start status tracking after connection
             self.start_status_tracking()
@@ -380,18 +380,18 @@ class DroneController:
 
         return False
 
-    def fly_to_here(self, distance=5.0, max_retries=3):
+    def fly_to_here(self, distance=5.0, angle=0.0, max_retries=3):
         """
-        Command the drone to fly to a location in the direction of current heading
+        Command the drone to fly to a location in a specific direction
         
         Args:
             distance (float): Distance to fly in meters (default: 5.0m)
+            angle (float): Angle in degrees relative to current heading (default: 0.0)
+                        0 = straight ahead, 90 = right, -90 = left, 180 = behind
             max_retries (int): Maximum number of retry attempts for commands
-            retry_delay (float): Delay between retries in seconds
-            timeout (int): Maximum time to wait for reaching the target in seconds
             
         Returns:
-            bool: True if command accepted and target reached, False otherwise
+            bool: True if command accepted, False otherwise
         """
         import math
         import time
@@ -414,8 +414,11 @@ class DroneController:
             logger.error("Cannot determine current heading")
             return False
         
-        # Convert heading to radians for calculation
-        heading_rad = math.radians(heading)
+        # Calculate target heading by adding the angle to current heading
+        target_heading = (heading + angle) % 360
+        
+        # Convert target heading to radians for calculation
+        target_heading_rad = math.radians(target_heading)
         
         # Earth radius in meters
         earth_radius = 6378137.0
@@ -427,11 +430,11 @@ class DroneController:
         # Calculate target position
         target_lat = math.asin(
             math.sin(math.radians(current_lat)) * math.cos(angular_distance) +
-            math.cos(math.radians(current_lat)) * math.sin(angular_distance) * math.cos(heading_rad)
+            math.cos(math.radians(current_lat)) * math.sin(angular_distance) * math.cos(target_heading_rad)
         )
         
         target_lon = math.radians(current_lon) + math.atan2(
-            math.sin(heading_rad) * math.sin(angular_distance) * math.cos(math.radians(current_lat)),
+            math.sin(target_heading_rad) * math.sin(angular_distance) * math.cos(math.radians(current_lat)),
             math.cos(angular_distance) - math.sin(math.radians(current_lat)) * math.sin(target_lat)
         )
         
@@ -440,7 +443,7 @@ class DroneController:
         target_lon = math.degrees(target_lon)
         
         logger.info(f"Current position: Lat {current_lat:.6f}, Lon {current_lon:.6f}, Heading {heading}°")
-        logger.info(f"Target position: Lat {target_lat:.6f}, Lon {target_lon:.6f}, Distance {distance}m")
+        logger.info(f"Target position: Lat {target_lat:.6f}, Lon {target_lon:.6f}, Distance {distance}m, Angle {angle}°")
         
         # Set flight mode to GUIDED
         if not self.set_flight_mode(FlightMode.GUIDED):
@@ -485,9 +488,8 @@ class DroneController:
             z=alt                                    # Altitude (meters, relative to home)
         )
         
-
         success = False
-   
+        
         # Send the mission item
         self.drone.mav.send(mission_item)
         
@@ -506,62 +508,12 @@ class DroneController:
         else:
             logger.warning("No acknowledgment received for waypoint")
         
-        
         if not success:
             logger.error(f"Failed to send waypoint command after {max_retries} attempts")
             return False
         
-        
-        """
-        start_time = time.time()
-        reached_target = False
-        last_distance = float('inf')
-        
-        # Continue checking position until timeout or target reached
-        while time.time() - start_time < timeout and not reached_target:
-            # Get current position
-            status = self.get_drone_status()
-            
-            if status.get('position'):
-                current_lat, current_lon = status['position']
-                
-                # Calculate distance to target using Haversine formula
-                current_lat_rad = math.radians(current_lat)
-                current_lon_rad = math.radians(current_lon)
-                target_lat_rad = math.radians(target_lat)
-                target_lon_rad = math.radians(target_lon)
-                
-                # Haversine formula
-                dlon = target_lon_rad - current_lon_rad
-                dlat = target_lat_rad - current_lat_rad
-                a = math.sin(dlat/2)**2 + math.cos(current_lat_rad) * math.cos(target_lat_rad) * math.sin(dlon/2)**2
-                c = 2 * math.atan2(math.sqrt(a), math.sqrt(1-a))
-                distance_to_target = earth_radius * c  # in meters
-                
-                # Check if we're close enough to target (within 2m)
-                acceptance_radius = 2.0  # meters
-                if distance_to_target <= acceptance_radius:
-                    reached_target = True
-                    logger.success(f"Target reached! Final distance: {distance_to_target:.1f}m")
-                    break
-                
-                # Only log if distance has changed significantly
-                if abs(distance_to_target - last_distance) > 0.5:
-                    logger.info(f"Distance to target: {distance_to_target:.1f}m")
-                    last_distance = distance_to_target
-            
-            # Short sleep to prevent CPU overuse
-            time.sleep(0.5)
-        
-        # Check if we timed out
-        if not reached_target:
-            logger.warning(f"Timeout reached ({timeout}s). Drone did not reach target.")
-            return False
-        
-        logger.success("Fly to waypoint completed successfully!")
-        return True
-        """
-        
+        return success
+
 
     def land(self, max_retries=3, retry_delay=2):
         """
@@ -842,21 +794,28 @@ class DroneShell(cmd.Cmd):
 
     def do_flytohere(self, arg):
         """
-        Command the drone to fly specified distance in current heading direction
-        Usage: flytohere [distance]
+        Command the drone to fly specified distance in a specific direction
+        Usage: flytohere [distance] [angle]
         Example: flytohere 10       - Fly forward 10 meters
-        Default distance: 5 meters
+        Example: flytohere 10 90    - Fly 10 meters to the right
+        Example: flytohere 10 -90   - Fly 10 meters to the left
+        Example: flytohere 10 180   - Fly 10 meters backwards
+        Default: distance=5.0, angle=0.0 (straight ahead)
         """
         if not self._check_connection():
             return
         
+        args = arg.split()
+        if len(args) < 2:
+            print("Error: Please specify distance, angle, and node ID")
+            print("Usage: flytohere <distance> <angle>")
+            return
+
         try:
-            # Parse distance argument if provided, otherwise use default
-            if arg:
-                distance = float(arg)
-            else:
-                distance = 5.0
-            
+            # Parse distance and angle arguments if provided, otherwise use defaults
+            distance = float(args[0])
+            angle = float(args[1])
+     
             # Check if drone is armed
             if not self.drone_controller.is_armed:
                 print("Arming drone...")
@@ -865,17 +824,19 @@ class DroneShell(cmd.Cmd):
                     return
                 time.sleep(1)  # Wait a moment after arming
 
-            print(f"Flying {distance} meters in current heading direction...")
+            print(f"Flying {distance} meters at angle {angle}° from current heading...")
             
-            # Call the fly_to_here method
-            if self.drone_controller.fly_to_here(distance=distance):
-                print(f"Flight completed successfully!")
+            # Call the fly_to_here method with both distance and angle
+            if self.drone_controller.fly_to_here(distance=distance, angle=angle):
+                print("Flight command accepted successfully!")
             else:
-                print("Flight command failed or target not reached")
+                print("Flight command failed")
                 
         except ValueError:
-            print("Error: Invalid distance value. Usage: flytohere [distance]")
-            print("Example: flytohere 10  - Fly forward 10 meters")
+            print("Error: Invalid parameters. Usage: flytohere [distance] [angle]")
+            print("Example: flytohere 10      - Fly forward 10 meters")
+            print("Example: flytohere 10 90   - Fly 10 meters to the right")
+            print("Example: flytohere 10 -90  - Fly 10 meters to the left")
         except Exception as e:
             print(f"Error executing flight command: {str(e)}")
 

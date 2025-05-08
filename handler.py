@@ -797,6 +797,35 @@ class NetworkHandler:
             self.send_to_gui('LOG', {
                 'message': "Network map refreshed"
             })
+        
+        
+        elif command_type == 'FLY_TO_HERE':
+            # Get parameters
+            distance = data.get('distance', 5.0)  # Default to 5m
+            angle = data.get('angle', 0.0)        # Default to forward (0 degrees)
+
+            if target_node == 'all':
+                # Send fly command to all nodes
+                for node_id in self.known_nodes:
+                    self.send_drone_command(node_id, 'fly_to_here', {'distance': distance, 'angle': angle})
+
+                self.send_to_gui('LOG', {
+                    'message': f"Commanding all nodes to fly {distance}m at {angle}° angle"
+                })
+            else:
+                # Send fly command to specific node
+                node_id = int(target_node)
+                if node_id in self.known_nodes:
+                    self.send_drone_command(node_id, 'fly_to_here', {'distance': distance, 'angle': angle})
+
+                    self.send_to_gui('LOG', {
+                        'message': f"Commanding node {node_id} to fly {distance}m at {angle}° angle"
+                    })
+                else:
+                    self.send_to_gui('LOG', {
+                        'message': f"Error: Node {node_id} not found",
+                        'level': 'error'
+                    })
 
         else:
             logging.warning(f"Unknown GUI command type: {command_type}")
@@ -915,6 +944,64 @@ class HandlerShell(cmd.Cmd):
             print(f"{node_id:<10}{is_master:<10}{last_hb_str:<20}")
         print()
 
+    def do_flytohere(self, arg):
+        """
+        Command the drone to fly a specified distance in a specific direction
+        Usage: flytohere <distance> <angle> <node_id>
+        Example: flytohere 5 0 1       - Fly node 1 forward 5 meters
+        Example: flytohere 10 90 2     - Fly node 2 right 10 meters
+        Example: flytohere 10 270 3    - Fly node 3 left 10 meters
+        Example: flytohere 5 0 all     - Fly all nodes forward 5 meters
+        
+        Parameters:
+        <distance> - Distance to fly in meters
+        <angle>    - Angle in degrees (0=forward, 90=right, 270=left, 180=backward)
+        <node_id>  - Node ID or 'all' for all nodes
+        """
+        args = arg.split()
+        if len(args) < 3:
+            print("Error: Please specify distance, angle, and node ID")
+            print("Usage: flytohere <distance> <angle> <node_id>")
+            print("Example: flytohere 5 0 1     - Fly node 1 forward 5 meters")
+            print("Example: flytohere 10 90 all  - Fly all nodes right 10 meters")
+            return
+
+        try:
+            distance = float(args[0])
+            angle = float(args[1])
+            target = args[2]
+
+            # Validate distance
+            if distance <= 0:
+                print("Error: Distance must be greater than 0")
+                return
+
+            # Prepare command parameters
+            params = {
+                'distance': distance,
+                'angle': angle
+            }
+
+            if target.lower() == 'all':
+                self._broadcast_command('fly_to_here', params)
+            else:
+                try:
+                    node_id = int(target)
+                    if node_id in self.handler.known_nodes:
+                        if self.handler.send_drone_command(node_id, 'fly_to_here', params):
+                            print(f"Fly command sent to Node {node_id} - distance: {distance}m, angle: {angle}°")
+
+                            # Wait for response
+                            self._wait_for_command_response('fly_to_here')
+                    else:
+                        print(f"Error: Node {node_id} is not connected")
+                except ValueError:
+                    print("Error: Please provide a valid node ID")
+                    print("Usage: flytohere <distance> <angle> <node_id>")
+
+        except ValueError:
+            print("Error: Please provide valid numeric values for distance and angle")
+            print("Usage: flytohere <distance> <angle> <node_id>")
 
     def _broadcast_command(self, command, params=None):
         """
@@ -1106,50 +1193,6 @@ class HandlerShell(cmd.Cmd):
         except ValueError:
             print("Error: Please provide a valid altitude in meters")
             print("Usage: takeoff <altitude> <node_id>")
-
-    def do_throttle(self, arg):
-        """
-        Set throttle value
-        Usage: throttle <value> <node_id>
-        Example: throttle 50 1
-        Example: throttle 50 all
-        """
-        args = arg.split()
-        if len(args) < 2:
-            print("Error: Please specify both throttle value and node ID")
-            print("Usage: throttle <value> <node_id>")
-            print("Example: throttle 50 1")
-            print("Example: throttle 50 all")
-            return
-
-        try:
-            value = int(args[0])
-            if value < 0 or value > 100:
-                print("Error: Throttle value must be between 0 and 100")
-                return
-
-            target = args[1]
-
-            if target.lower() == 'all':
-                self._broadcast_command('set_throttle', {'value': value})
-            else:
-                try:
-                    node_id = int(target)
-                    if node_id in self.handler.known_nodes:
-                        if self.handler.send_drone_command(node_id, 'set_throttle', {'value': value}):
-                            print(f"Set throttle command sent to Node {node_id} - value: {value}%")
-
-                            # Wait for response
-                            self._wait_for_command_response('set_throttle')
-                    else:
-                        print(f"Error: Node {node_id} is not connected")
-                except ValueError:
-                    print("Error: Please provide a valid node ID")
-                    print("Usage: throttle <value> <node_id>")
-
-        except ValueError:
-            print("Error: Please provide a valid throttle value (0-100)")
-            print("Usage: throttle <value> <node_id>")
 
     def do_status(self, arg):
         """
