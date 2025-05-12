@@ -67,7 +67,7 @@ class FlightMode(enum.Enum):
         return self.value
 
 class DroneController:
-    def __init__(self, connection_string="udp:127.0.0.1:14550"):
+    def __init__(self, connection_string):
         """
         Initialize drone controller with connection string
         Args:
@@ -139,6 +139,12 @@ class DroneController:
                         self.current_status['altitude'] = msg.relative_alt / 1000  # Convert to meters
                         self.current_status['position'] = (msg.lat / 1e7, msg.lon / 1e7)  # Convert to degrees
 
+                         # Update heading if available
+                        if hasattr(msg, 'hdg') and msg.hdg != 0 and msg.hdg != 65535:  # Valid heading values
+                            heading = msg.hdg / 100.0 if msg.hdg > 360 else msg.hdg  # Convert if needed
+                            self.current_status['heading'] = heading
+                            logger.debug(f"Updated heading from GLOBAL_POSITION_INT: {heading}°")
+
                     elif msg_type == 'VFR_HUD':
                         self.current_status['groundspeed'] = msg.groundspeed
                         self.current_status['heading'] = msg.heading
@@ -161,24 +167,64 @@ class DroneController:
                 logger.error(f"Error in status tracker: {str(e)}")
                 time.sleep(1)  # Prevent tight loop in case of errors
 
-    def connect(self):
+    def connect(self, baudrate=None):
         """
         Establish connection with the drone
         Returns:
             bool: True if connection successful, False otherwise
         """
         try:
-            self.drone = mavutil.mavlink_connection(self.connection_string)
+            if baudrate is not None:
+                self.drone = mavutil.mavlink_connection(self.connection_string, baudrate)
+            else:
+                self.drone = mavutil.mavlink_connection(self.connection_string)
+
             self.drone.wait_heartbeat()
             logger.success(f"Connected to drone! (system: {self.drone.target_system}, "
                            f"component: {self.drone.target_component})")
 
+            # Request data streams immediately after connection
+            self.request_data_streams()
             # Start status tracking after connection
             self.start_status_tracking()
+
             return True
         except Exception as e:
             logger.error(f"Connection failed: {str(e)}")
             return False
+
+    def request_data_streams(self):
+        """
+        Request data streams for position and heading information
+        """
+        if not self.drone:
+            logger.error("No drone connection")
+            return False
+        
+        # Define the streams we want with rates in Hz
+        stream_rates = {
+            mavutil.mavlink.MAV_DATA_STREAM_POSITION: 5,        # Position data at 5Hz
+            mavutil.mavlink.MAV_DATA_STREAM_EXTRA1: 5,          # Attitude and heading at 5Hz
+            mavutil.mavlink.MAV_DATA_STREAM_EXTENDED_STATUS: 2, # System status at 2Hz
+            mavutil.mavlink.MAV_DATA_STREAM_RAW_SENSORS: 2,     # Raw sensor data at 2Hz
+            mavutil.mavlink.MAV_DATA_STREAM_RC_CHANNELS: 1      # RC channel data at 1Hz
+        }
+        
+        # Request each stream
+        for stream_id, rate in stream_rates.items():
+            self.drone.mav.request_data_stream_send(
+                self.drone.target_system,
+                self.drone.target_component,
+                stream_id,
+                rate,  # Rate in Hz
+                1      # Start/stop (1=start)
+            )
+            logger.info(f"Requested data stream {stream_id} at {rate}Hz")
+        
+        # Small delay to allow streams to start
+        time.sleep(0.5)
+        
+        return True
 
     def arm(self):
         """
@@ -766,9 +812,9 @@ class DroneShell(cmd.Cmd):
         Usage: connect [connection_string]
         Default connection: udp:127.0.0.1:14550
         """
-        connection_string = arg if arg else "udp:127.0.0.1:14550"
+        connection_string = arg if arg else "/dev/ttyAMA0"
         self.drone_controller = DroneController(connection_string)
-        if self.drone_controller.connect():
+        if self.drone_controller.connect(baudrate=57600):
             print(f"Successfully connected to {connection_string}")
         else:
             print("Failed to connect")
