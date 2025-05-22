@@ -428,7 +428,7 @@ class DroneController:
 
     def fly_to_here(self, distance=5.0, angle=0.0, max_retries=3):
         """
-        Command the drone to fly to a location in a specific direction
+        Command the drone to fly to a location in a specific direction using SET_POSITION_TARGET_GLOBAL_INT
         
         Args:
             distance (float): Distance to fly in meters (default: 5.0m)
@@ -515,48 +515,72 @@ class DroneController:
         # Default altitude: use current + 2m if available, otherwise 10m
         alt = (status.get('altitude', 0) + 2) if status.get('altitude') is not None else 10.0
         
-        # Create mission item message for moving to target position
-        # We're using MAV_CMD_NAV_WAYPOINT command
-        mission_item = dialect.MAVLink_mission_item_int_message(
-            target_system=self.drone.target_system,
-            target_component=self.drone.target_component,
-            seq=0,                                   # Sequence number
-            frame=dialect.MAV_FRAME_GLOBAL_RELATIVE_ALT_INT,  # Altitude relative to home
-            command=dialect.MAV_CMD_NAV_WAYPOINT,    # Go to waypoint command
-            current=2,                               # Guided mode waypoint (2 indicates "guided mode")
-            autocontinue=1,                          # Auto continue to next waypoint
-            param1=0,                                # Hold time (seconds)
-            param2=2.0,                              # Acceptance radius (meters)
-            param3=0,                                # Pass by waypoint (0 = fixed location)
-            param4=0,                                # Desired yaw angle (NaN = unchanged)
-            x=lat_int,                               # Latitude (degrees * 1e7)
-            y=lon_int,                               # Longitude (degrees * 1e7)
-            z=alt                                    # Altitude (meters, relative to home)
+        # Define which fields to use in the SET_POSITION_TARGET_GLOBAL_INT message
+        # We're only setting position (lat, lon, alt)
+        mask = (
+            dialect.POSITION_TARGET_TYPEMASK_VX_IGNORE |
+            dialect.POSITION_TARGET_TYPEMASK_VY_IGNORE |
+            dialect.POSITION_TARGET_TYPEMASK_VZ_IGNORE |
+            dialect.POSITION_TARGET_TYPEMASK_AX_IGNORE |
+            dialect.POSITION_TARGET_TYPEMASK_AY_IGNORE |
+            dialect.POSITION_TARGET_TYPEMASK_AZ_IGNORE |
+            dialect.POSITION_TARGET_TYPEMASK_FORCE_SET |
+            dialect.POSITION_TARGET_TYPEMASK_YAW_IGNORE |
+            dialect.POSITION_TARGET_TYPEMASK_YAW_RATE_IGNORE
         )
         
+        # Create SET_POSITION_TARGET_GLOBAL_INT message
+        position_target_msg = dialect.MAVLink_set_position_target_global_int_message(
+            time_boot_ms=0,                             # Not used
+            target_system=self.drone.target_system,
+            target_component=self.drone.target_component,
+            coordinate_frame=dialect.MAV_FRAME_GLOBAL_RELATIVE_ALT_INT,  # Altitude relative to home
+            type_mask=mask,                             # Use only the position values
+            lat_int=lat_int,                            # Latitude (degrees * 1e7)
+            lon_int=lon_int,                            # Longitude (degrees * 1e7)
+            alt=alt,                                    # Altitude (meters, relative to home)
+            vx=0,                                       # X velocity (not used)
+            vy=0,                                       # Y velocity (not used)
+            vz=0,                                       # Z velocity (not used)
+            afx=0,                                      # X acceleration (not used)
+            afy=0,                                      # Y acceleration (not used)
+            afz=0,                                      # Z acceleration (not used)
+            yaw=0,                                      # Yaw (not used)
+            yaw_rate=0                                  # Yaw rate (not used)
+        )
+        
+        attempts = 0
         success = False
         
-        # Send the mission item
-        self.drone.mav.send(mission_item)
-        
-        # Wait for acknowledgment 
-        ack = self.drone.recv_match(type='COMMAND_ACK', blocking=True, timeout=2.0)
-        
-        if ack and (ack.command == dialect.MAV_CMD_NAV_WAYPOINT or 
-                    ack.command == dialect.MAV_CMD_MISSION_START):
-            if ack.result == dialect.MAV_RESULT_ACCEPTED:
-                logger.success("Waypoint command accepted!")
+        # Try to send the SET_POSITION_TARGET_GLOBAL_INT message with retries
+        while attempts < max_retries and not success:
+            attempts += 1
+            
+            # Send the position target message
+            self.drone.mav.send(position_target_msg)
+            logger.info(f"Position target command attempt {attempts}/{max_retries}")
+            
+            # Unlike mission commands, SET_POSITION_TARGET_GLOBAL_INT typically doesn't get a direct ACK
+            # We'll use a brief delay and check if mode is still GUIDED as a basic validation
+            time.sleep(0.5)
+            
+            # Check if still in GUIDED mode
+            current_mode = self.get_current_mode()
+            if current_mode == FlightMode.GUIDED:
+                logger.success("Position target command sent in GUIDED mode!")
                 success = True
             else:
-                # Log the specific failure reason if available
-                result_name = dialect.enums['MAV_RESULT'][ack.result].name if ack.result in dialect.enums['MAV_RESULT'] else f"Unknown ({ack.result})"
-                logger.warning(f"Waypoint attempt failed: {result_name}")
-        else:
-            logger.warning("No acknowledgment received for waypoint")
+                logger.warning(f"Not in GUIDED mode after sending command, mode is {current_mode}")
+                
+            # If attempt failed and we're not at max retries, wait before trying again
+            if not success and attempts < max_retries:
+                logger.info("Retrying in 1 second...")
+                time.sleep(1)
         
-        if not success:
-            logger.error(f"Failed to send waypoint command after {max_retries} attempts")
-            return False
+        if success:
+            logger.success(f"Successfully sent position target command to fly {distance}m at {angle}° angle")
+        else:
+            logger.error(f"Failed to send position target command after {max_retries} attempts")
         
         return success
 
@@ -812,9 +836,11 @@ class DroneShell(cmd.Cmd):
         Usage: connect [connection_string]
         Default connection: udp:127.0.0.1:14550
         """
-        connection_string = arg if arg else "/dev/ttyAMA0"
+        # connection_string = arg if arg else "/dev/ttyAMA0"
+        connection_string = arg if arg else "udp:172.21.128.1:14550"
         self.drone_controller = DroneController(connection_string)
-        if self.drone_controller.connect(baudrate=57600):
+        # if self.drone_controller.connect(baudrate=57600):
+        if self.drone_controller.connect():
             print(f"Successfully connected to {connection_string}")
         else:
             print("Failed to connect")
