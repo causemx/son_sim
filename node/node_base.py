@@ -2,8 +2,8 @@ import threading
 import time
 import json
 from enum import Enum
-import drone_v2x
-from controller import DroneController
+from lib import drone_v2x
+from lib.controller import DroneController
 
 class NodeType(Enum):
     NODE = "NODE"

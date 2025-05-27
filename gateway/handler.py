@@ -8,7 +8,7 @@ import logging
 import cmd
 import atexit
 import os
-import drone_v2x
+from lib import drone_v2x
 
 # Add terminal reset function that will run on exit
 def reset_terminal():
