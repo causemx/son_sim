@@ -1,6 +1,5 @@
 import folium
 import io
-import socket
 import json
 import sys
 import time
@@ -28,6 +27,7 @@ from PyQt5.QtCore import (
 )
 from PyQt5.QtWebEngineWidgets import QWebEngineView
 from PyQt5.QtWebChannel import QWebChannel
+from ..libs import drone_v2x
 
 
 # Configure logging to only show console output
@@ -377,21 +377,18 @@ class NetworkMonitorThread(QThread):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        # Updated IP addresses for outside network communication
-        # self.gui_host = '192.168.1.2'     # GUI's outside IP
-        self.gui_host = 'localhost'
-        self.gui_port = 5567              # GUI's port
-        # self.handler_host = '192.168.1.1' # Handler's outside IP
-        self.handler_host = 'localhost'
-        self.handler_port = 5566          # Handler's outside port
+        # V2X communication settings
+        self.gui_group = 1     # GUI's group
+        self.gui_id = 1        # GUI's ID
+        self.handler_group = 11  # Handler's group
+        self.handler_id = 10     # Handler's ID
 
-        # Create and bind socket
-        self.socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        # Initialize drone_v2x
         try:
-            self.socket.bind((self.gui_host, self.gui_port))
-            logger.info(f"GUI bound to {self.gui_host}:{self.gui_port}")
-        except socket.error as e:
-            logger.error(f"Failed to bind GUI socket: {e}")
+            drone_v2x.init()
+            logger.info(f"GUI initialized with V2X communication - Group {self.gui_group}, ID {self.gui_id}")
+        except Exception as e:
+            logger.error(f"Failed to initialize V2X communication: {e}")
             raise
 
         # Send initial connection message
@@ -401,11 +398,21 @@ class NetworkMonitorThread(QThread):
         self.is_running = True
         while self.is_running:
             try:
-                data, addr = self.socket.recvfrom(4096)
-                message = json.loads(data.decode())
-                self.process_message(message)
+                # Check for messages from handler using V2X communication
+                try:
+                    data, addr = drone_v2x.recv(1400)
+                    message = json.loads(data.decode().rstrip('\x00'))
+                    self.process_message(message)
+                except Exception as e:
+                    # No message or error
+                    if str(e) != "timed out":  # Ignore timeout errors
+                        logger.error(f"Error receiving V2X message: {e}")
+
+                time.sleep(0.01)  # Short sleep to prevent CPU overuse
+
             except Exception as e:
-                logger.error(f"Error receiving message: {e}")
+                logger.error(f"Error in NetworkMonitorThread: {e}")
+                time.sleep(0.1)
 
     def send_connection_message(self):
         """Send connection message to handler with retries"""
@@ -415,12 +422,11 @@ class NetworkMonitorThread(QThread):
         for attempt in range(max_retries):
             try:
                 message = {
-                    'type': 'GUI_CONNECTED'
+                    'type': 'GUI_CONNECTED',
+                    'from': self.gui_id
                 }
-                self.socket.sendto(
-                    json.dumps(message).encode(),
-                    (self.handler_host, self.handler_port)
-                )
+                json_message = json.dumps(message)
+                drone_v2x.send(json_message, (self.handler_group, self.handler_id))
                 logger.info(f"Sent connection message to handler (attempt {attempt + 1})")
                 time.sleep(retry_delay)
                 return
@@ -430,10 +436,11 @@ class NetworkMonitorThread(QThread):
                     time.sleep(retry_delay)
     
     def send_command(self, command_type, target_node=None, params=None):
-        """Send a command to the handler"""
+        """Send a command to the handler using V2X communication"""
         try:
             message = {
                 'type': 'GUI_COMMAND',
+                'from': self.gui_id,
                 'data': {
                     'command_type': command_type
                 }
@@ -447,10 +454,8 @@ class NetworkMonitorThread(QThread):
             if params:
                 message['data'].update(params)
                 
-            self.socket.sendto(
-                json.dumps(message).encode(),
-                (self.handler_host, self.handler_port)
-            )
+            json_message = json.dumps(message)
+            drone_v2x.send(json_message, (self.handler_group, self.handler_id))
             logger.info(f"Sent command: {command_type} to handler")
             return True
         except Exception as e:
@@ -486,12 +491,6 @@ class NetworkMonitorThread(QThread):
     def stop(self):
         logger.info("Stopping NetworkMonitorThread...")
         self.is_running = False
-        # Optional: Send a message to unblock the socket if it's waiting for data
-        try:
-            self.socket.sendto(b'', (self.gui_host, self.gui_port))
-        except Exception:
-            pass  # Ignore errors during shutdown
-        self.socket.close()
         logger.info("NetworkMonitorThread stopped")
 
 
@@ -840,7 +839,6 @@ class MonitorGUI(QMainWindow):
         self.monitor_thread.node_removed.connect(self.remove_node)
         self.monitor_thread.master_transition_start.connect(self.network_viz.startMasterTransition)
         self.monitor_thread.master_transition_end.connect(self.network_viz.endMasterTransition)
-        #self.monitor_thread.node_status_updated.connect(self.network_viz.updateDroneStatus)
         self.monitor_thread.node_status_updated.connect(self.filter_existing_nodes)
         self.monitor_thread.start()
 
@@ -917,7 +915,6 @@ class MonitorGUI(QMainWindow):
         self.log_text.append(f"[{timestamp}] {message}")
 
     def closeEvent(self, event):
-        # self.position_timer.stop()  # Stop the simulation timer
         self.monitor_thread.stop()
         event.accept()
 
@@ -927,8 +924,9 @@ def main():
     try:
         window = MonitorGUI()
         window.show()
-        print("\nGUI running on 192.168.1.2:5567")
-        print("Connected to handler at 192.168.1.1:5566")
+        print("\nGUI running with V2X communication:")
+        print("Group: 1, ID: 1")
+        print("Connected to handler at Group: 11, ID: 10")
         sys.exit(app.exec_())
     except Exception as e:
         logger.error(f"Error starting GUI: {e}")

@@ -1,6 +1,5 @@
 import statistics
 import sys
-import socket
 import json
 import time
 import threading
@@ -40,17 +39,15 @@ class JSONEncoder(json.JSONEncoder):
         return super().default(obj)
 
 class NetworkHandler:
-    def __init__(self, handler_id=10, outside_ip='0.0.0.0'):
-        # V2X communication settings - Handler acts as a node in group 11
-        self.group = 11  # Same group as nodes
-        self.handler_id = handler_id  # Handler's ID (default 10)
+    def __init__(self, handler_id=10, gui_group=1, gui_id=1):
+        # V2X communication settings
+        self.group = 11  # Handler's group
+        self.handler_id = handler_id  # Handler's ID
         self.node_group = 11  # Nodes are also in group 11
-
-        # Outside network interface (for GUI)
-        self.outside_host = outside_ip
-        self.outside_port = 5566  # Port for receiving GUI messages
-        self.gui_host = '192.168.1.2'  # GUI's outside IP
-        self.gui_port = 5567  # GUI's port
+        
+        # GUI communication settings
+        self.gui_group = gui_group  # GUI's group
+        self.gui_id = gui_id  # GUI's ID
 
         self.is_running = False
         self.known_nodes = set()
@@ -90,18 +87,8 @@ class NetworkHandler:
             logging.error(f"Failed to initialize V2X communication: {e}")
             raise
 
-        # Setup socket for GUI communication (outside network) - this remains unchanged
-        self.gui_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        try:
-            self.gui_socket.bind((self.outside_host, self.outside_port))
-            self.gui_socket.settimeout(0.1)
-            logging.info(f"Handler bound to outside network: {self.outside_host}:{self.outside_port}")
-        except socket.error as e:
-            logging.error(f"Failed to bind outside network socket: {e}")
-            raise
-
         logging.info("Network handler initialized")
-        logging.info(f"GUI communication configured for {self.gui_host}:{self.gui_port}")
+        logging.info(f"GUI communication configured for Group {self.gui_group}, ID {self.gui_id}")
 
     def _auto_connect(self):
         """Automatic connection to drone with retry mechanism (similar to node)"""
@@ -371,15 +358,15 @@ class NetworkHandler:
                     self.assign_new_master()
 
     def send_to_gui(self, message_type, data):
+        """Send message to GUI using V2X communication"""
         message = {
              'type': message_type,
+             'from': self.handler_id,
              'data': data
          }
         try:
-            self.gui_socket.sendto(
-                json.dumps(message, cls=JSONEncoder).encode(),
-                (self.gui_host, self.gui_port)
-            )
+            json_message = json.dumps(message, cls=JSONEncoder)
+            drone_v2x.send(json_message, (self.gui_group, self.gui_id))
         except Exception as e:
             logging.error(f"Error sending to GUI: {e}")
 
@@ -1100,23 +1087,20 @@ class NetworkHandler:
                 try:
                     data, addr = drone_v2x.recv(1400)
                     message = json.loads(data.decode().rstrip('\x00'))
-                    # Process the message
-                    self.process_node_message(message, addr)
+                    # Process the message based on sender
+                    from_id = message.get('from', 0)
+                    
+                    # Check if message is from GUI
+                    if from_id == self.gui_id:
+                        self.process_gui_message(message, addr)
+                    else:
+                        # Message from node
+                        self.process_node_message(message, addr)
+                        
                 except Exception as e:
                     # No message or error
                     if str(e) != "timed out": # Ignore timeout errors
-                        logging.error(f"Error processing node message: {e}")
-
-                # Check for GUI messages on outside network
-                try:
-                    data, addr = self.gui_socket.recvfrom(1024)
-                    message = json.loads(data.decode())
-
-                    self.process_gui_message(message, addr)
-                except socket.timeout:
-                    pass
-                except Exception as e:
-                    logging.error(f"Error processing GUI message: {e}")
+                        logging.error(f"Error processing V2X message: {e}")
 
                 time.sleep(0.01)  # Short sleep to prevent CPU overuse
 
@@ -1150,10 +1134,6 @@ class NetworkHandler:
             self._stop_status_reporting()
             self.drone_controller.cleanup()
             
-        try:
-            self.gui_socket.close()
-        except Exception:
-            pass
         # Make sure terminal is reset when stopping
         reset_terminal()
         logging.info("Network handler stopped")
@@ -1161,6 +1141,8 @@ class NetworkHandler:
 
 def main():
     handler_id = 10  # Default handler ID
+    gui_group = 1    # Default GUI group
+    gui_id = 1       # Default GUI ID
     
     # Check if handler ID is provided as command line argument
     if len(sys.argv) > 1:
@@ -1173,15 +1155,27 @@ def main():
             print("Error: Invalid handler ID format, must be an integer")
             sys.exit(1)
     
+    # Check if GUI group and ID are provided as command line arguments
+    if len(sys.argv) > 3:
+        try:
+            gui_group = int(sys.argv[2])
+            gui_id = int(sys.argv[3])
+            if gui_group < 1 or gui_group > 255 or gui_id < 1 or gui_id > 255:
+                print("Error: GUI group and ID must be between 1 and 255")
+                sys.exit(1)
+        except ValueError:
+            print("Error: Invalid GUI group/ID format, must be integers")
+            sys.exit(1)
+    
     logging.info("Starting network handler...")
     try:
-        handler = NetworkHandler(handler_id=handler_id)
+        handler = NetworkHandler(handler_id=handler_id, gui_group=gui_group, gui_id=gui_id)
         handler.start()
 
         print(f"\nHandler running with V2X communication:")
-        print(f"Group: {handler.group}, Handler ID: {handler.handler_id}")
+        print(f"Handler Group: {handler.group}, Handler ID: {handler.handler_id}")
         print(f"Connecting to nodes in Group: {handler.node_group}, IDs: 11-13")
-        print(f"GUI updates sent to {handler.gui_host}:{handler.gui_port}")
+        print(f"GUI communication: Group {handler.gui_group}, ID {handler.gui_id}")
         print(f"Handler drone connection: udp:127.0.0.1:14550")
         print("\nHandler is running in background mode.")
         print("- Handler will automatically try to connect to its drone")

@@ -246,7 +246,6 @@ def set_group(group):
     send_fd.close()
 #endregion
 
-
 if __name__ == "__main__":
     set_debug(True)
     init()
