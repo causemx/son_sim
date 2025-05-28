@@ -164,3 +164,4 @@ venv_sonsim/
 *.sh
 son_sim.sln
 .vscode/launch.json
+.DS_Store

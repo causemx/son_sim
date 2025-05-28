@@ -27,7 +27,8 @@ from PyQt5.QtCore import (
 )
 from PyQt5.QtWebEngineWidgets import QWebEngineView
 from PyQt5.QtWebChannel import QWebChannel
-from ..libs import drone_v2x
+
+from libs import drone_v2x
 
 
 # Configure logging to only show console output
