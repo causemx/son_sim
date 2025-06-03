@@ -39,11 +39,11 @@ class JSONEncoder(json.JSONEncoder):
         return super().default(obj)
 
 class NetworkHandler:
-    def __init__(self, handler_id=10, gui_group=1, gui_id=1):
-        # V2X communication settings
-        self.group = 11  # Handler's group
-        self.handler_id = handler_id  # Handler's ID
-        self.node_group = 11  # Nodes are also in group 11
+    def __init__(self, handler_id=11, gui_group=1, gui_id=1):
+        # V2X communication settings - Handler now in Group 1
+        self.group = 1  # Handler's group (changed from 11 to 1)
+        self.handler_id = handler_id  # Handler's ID (default is 11)
+        self.node_group = 11  # Nodes are in group 11
         
         # GUI communication settings
         self.gui_group = gui_group  # GUI's group
@@ -60,7 +60,7 @@ class NetworkHandler:
 
         # Initialization phase attributes
         self.initialization_phase = True
-        self.expected_nodes = 1
+        self.expected_nodes = 2  # Expecting nodes 13 and 14
         self.node_scores = {}
         self.join_timestamps = {}
         self.heartbeat_consistency = {}
@@ -172,7 +172,7 @@ class NetworkHandler:
                     'timestamp': time.time()
                 }
 
-                self.send_to_gui('HANDLER_STATUS_UPDATE', gui_status_data)
+                self.send_to_gui('DRONE_STATUS_UPDATE', gui_status_data)
                 
                 # Wait for next report interval
                 time.sleep(0.5)  # Report every 0.5 seconds
@@ -293,18 +293,15 @@ class NetworkHandler:
                     break
 
         if new_master_id is None:
-            logging.info("No eligible node found for new master")
-            self.send_to_gui('LOG', {
-                'message': "No eligible node found for new master"
-            })
-            return
+            # If no node found after current master, wrap around to the smallest
+            new_master_id = current_nodes[0]
 
         self.master_id = new_master_id
 
         # Notify GUI about transition period
         self.send_to_gui('MASTER_TRANSITION_START', {})
 
-        # Wait for 1 seconds
+        # Wait for 1 second
         time.sleep(1)
 
         # Notify all nodes about new master
@@ -329,33 +326,33 @@ class NetworkHandler:
         logging.info(f"Assigned Node {new_master_id} as new master")
 
     def check_node_status(self):
-            """Monitor all nodes' heartbeat status"""
-            current_time = time.time()
-            nodes_to_remove = set()
+        """Monitor all nodes' heartbeat status"""
+        current_time = time.time()
+        nodes_to_remove = set()
 
-            # Check all known nodes
-            for node_id in self.known_nodes:
-                if (node_id not in self.last_heartbeat or
-                    current_time - self.last_heartbeat[node_id] > self.heartbeat_timeout):
-                    logging.info(f"Node {node_id} heartbeat timeout detected")
-                    nodes_to_remove.add(node_id)
+        # Check all known nodes
+        for node_id in self.known_nodes:
+            if (node_id not in self.last_heartbeat or
+                current_time - self.last_heartbeat[node_id] > self.heartbeat_timeout):
+                logging.info(f"Node {node_id} heartbeat timeout detected")
+                nodes_to_remove.add(node_id)
 
-                    # Send log message to GUI
-                    self.send_to_gui('LOG', {
-                        'message': f"Node {node_id} lost - heartbeat timeout"
-                    })
-
-            # Remove lost nodes and notify GUI
-            for node_id in nodes_to_remove:
-                self.known_nodes.remove(node_id)
-                self.send_to_gui('NODE_REMOVED', {
-                    'node_id': node_id
+                # Send log message to GUI
+                self.send_to_gui('LOG', {
+                    'message': f"Node {node_id} lost - heartbeat timeout"
                 })
 
-                # If master node was removed, assign new master
-                if node_id == self.master_id:
-                    logging.info("Master node lost - assigning new master")
-                    self.assign_new_master()
+        # Remove lost nodes and notify GUI
+        for node_id in nodes_to_remove:
+            self.known_nodes.remove(node_id)
+            self.send_to_gui('NODE_REMOVED', {
+                'node_id': node_id
+            })
+
+            # If master node was removed, assign new master
+            if node_id == self.master_id:
+                logging.info("Master node lost - assigning new master")
+                self.assign_new_master()
 
     def send_to_gui(self, message_type, data):
         """Send message to GUI using V2X communication"""
@@ -377,13 +374,13 @@ class NetworkHandler:
         # Send all known nodes
         for node_id in self.known_nodes:
             self.send_to_gui('NODE_ADDED', {
-                'ip_last_byte': node_id,
+                'node_id': node_id,
                 'node_type': 'NODE'
             })
 
         # Send handler as a special node
         self.send_to_gui('NODE_ADDED', {
-            'ip_last_byte': self.handler_id,
+            'node_id': self.handler_id,
             'node_type': 'HANDLER'
         })
 
@@ -417,7 +414,7 @@ class NetworkHandler:
                 score += 0.4 * consistency_score
 
         # Factor 3: Node ID preference (20% weight)
-        id_score = 1.0 - (node_id / self.expected_nodes)  # Lower ID = better score
+        id_score = 1.0 - (node_id / 20.0)  # Lower ID = better score, normalize to reasonable range
         score += 0.2 * id_score
 
         return score
@@ -588,7 +585,7 @@ class NetworkHandler:
 
                 # Notify GUI about new node
                 self.send_to_gui('NODE_ADDED', {
-                    'ip_last_byte': from_node,
+                    'node_id': from_node,
                     'node_type': 'NODE'
                 })
 
@@ -649,7 +646,7 @@ class NetworkHandler:
 
             # Send node addition to GUI
             self.send_to_gui('NODE_ADDED', {
-                'ip_last_byte': from_node,
+                'node_id': from_node,
                 'node_type': 'NODE'
             })
 
@@ -1038,7 +1035,6 @@ class NetworkHandler:
                 'message': "Network map refreshed"
             })
         
-        
         elif command_type == 'FLY_TO_HERE':
             # Get parameters
             distance = data.get('distance', 5.0)  # Default to 5m
@@ -1140,7 +1136,7 @@ class NetworkHandler:
 
 
 def main():
-    handler_id = 10  # Default handler ID
+    handler_id = 11  # Default handler ID (changed from 10 to 11)
     gui_group = 1    # Default GUI group
     gui_id = 1       # Default GUI ID
     
@@ -1172,11 +1168,11 @@ def main():
         handler = NetworkHandler(handler_id=handler_id, gui_group=gui_group, gui_id=gui_id)
         handler.start()
 
-        print(f"\nHandler running with V2X communication:")
+        print("\nHandler running with V2X communication:")
         print(f"Handler Group: {handler.group}, Handler ID: {handler.handler_id}")
-        print(f"Connecting to nodes in Group: {handler.node_group}, IDs: 11-13")
+        print(f"Connecting to nodes in Group: {handler.node_group}, IDs: 13-14")
         print(f"GUI communication: Group {handler.gui_group}, ID {handler.gui_id}")
-        print(f"Handler drone connection: udp:127.0.0.1:14550")
+        print("Handler drone connection: udp:127.0.0.1:14550")
         print("\nHandler is running in background mode.")
         print("- Handler will automatically try to connect to its drone")
         print("- Use the GUI to control drones and monitor the network")

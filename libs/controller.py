@@ -1,7 +1,5 @@
-import os
 import cmd
 import sys
-import argparse
 import time
 import threading
 import enum
@@ -1042,6 +1040,7 @@ class DroneShell(cmd.Cmd):
 
 
 def main():
+    # For debugging
     try:
         DroneShell().cmdloop()
     except KeyboardInterrupt:

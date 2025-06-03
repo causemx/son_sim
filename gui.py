@@ -42,7 +42,8 @@ logger = logging.getLogger(__name__)
 class JSChannel(QObject):
     @pyqtSlot(str)
     def logMessage(self, message):
-        print(f"[JS DEBUG] {message}")
+        pass
+        # print(f"[JS DEBUG] {message}")
 
 class NetworkVisualizerWidget(QWidget):
     def __init__(self, parent=None):
@@ -104,7 +105,7 @@ class NetworkVisualizerWidget(QWidget):
              '''
         self.map.get_root().html.add_child(folium.Element(legend_html))
 
-        # Add scripts to control markers
+        # Add scripts to control markers - Updated for 3 nodes
         self.map._id = 'folium'  # Required for the map to be recognized by the script
         script = '''<script src="qrc:///qtwebchannel/qwebchannel.js"></script>
         <script src="https://unpkg.com/leaflet-rotate@0.2.8/dist/leaflet-rotate-src.js"></script>
@@ -130,10 +131,13 @@ class NetworkVisualizerWidget(QWidget):
                 icon: 'glyphicon-plane',
                 markerColor: 'blue'
             });
-        for (let i = 1; i <= 10; i++) {
+        
+        // Initialize markers for nodes 13, 14 (node IDs from your V2X setup)
+        const nodeIds = [13, 14];
+        for (let nodeId of nodeIds) {
             var marker = L.marker([24.7736084, 121.0415506]);
-            marker.bindPopup(() => markerPopup(i));
-            droneMarkers[i] = marker;
+            marker.bindPopup(() => markerPopup(nodeId));
+            droneMarkers[nodeId] = marker;
         }
 
         function markerPopup(node_id) {
@@ -144,7 +148,7 @@ class NetworkVisualizerWidget(QWidget):
                         Node ${node_id} - ${node.is_master ? 'Master' : 'Regular'}
                     </h4>
                     <div style="margin: 5px 0;">
-                        <b>IP:</b> 192.168.199.${node_id}<br>
+                        <b>Group/ID:</b> ${node_id === 11 ? '1/11' : '11/' + node_id}<br>
                         <b>Status:</b> ${node.status}<br>`;
                 const droneStatus = node.drone_status;
                 logMessage(droneStatus)
@@ -198,29 +202,34 @@ class NetworkVisualizerWidget(QWidget):
         function doUpdateNodes(nodesJson) {
             logMessage("doUpdateNodes: " + nodesJson);
             const nodes = JSON.parse(nodesJson);
-            for (let i = 1; i <= 10; i++) {
-                droneMarkers[i].node = nodes[i];
-                if (nodes[i] && nodes[i].pos) {
-                    droneMarkers[i].setLatLng(nodes[i].pos);
-                    if (droneMarkers[i].isPopupOpen()) {
-                        droneMarkers[i].setPopupContent(markerPopup(i));
+            const nodeIds = [11, 13, 14];
+            
+            for (let nodeId of nodeIds) {
+                droneMarkers[nodeId].node = nodes[nodeId];
+                if (nodes[nodeId] && nodes[nodeId].pos) {
+                    droneMarkers[nodeId].setLatLng(nodes[nodeId].pos);
+                    if (droneMarkers[nodeId].isPopupOpen()) {
+                        droneMarkers[nodeId].setPopupContent(markerPopup(nodeId));
                     }
-                    droneMarkers[i].setIcon(nodes[i].is_master ? masterIcon : regularIcon);
-                    droneMarkers[i].addTo(map_folium);
+                    droneMarkers[nodeId].setIcon(nodes[nodeId].is_master ? masterIcon : regularIcon);
+                    droneMarkers[nodeId].addTo(map_folium);
                 } else {
-                    if (droneMarkers[i].isPopupOpen()) {
-                        droneMarkers[i].closePopup();
+                    if (droneMarkers[nodeId].isPopupOpen()) {
+                        droneMarkers[nodeId].closePopup();
                     }
-                    map_folium.removeLayer(droneMarkers[i]);
-                    delete nodes[i];
+                    map_folium.removeLayer(droneMarkers[nodeId]);
+                    delete nodes[nodeId];
                 }
             }
 
             polylines.clearLayers();
-            for (let i in nodes) {
-                for (let j in nodes) {
-                    if (i < j) {
-                        L.polyline([nodes[i].pos, nodes[j].pos], {
+            const activeNodes = Object.keys(nodes).map(id => parseInt(id));
+            for (let i = 0; i < activeNodes.length; i++) {
+                for (let j = i + 1; j < activeNodes.length; j++) {
+                    let nodeA = activeNodes[i];
+                    let nodeB = activeNodes[j];
+                    if (nodes[nodeA] && nodes[nodeB] && nodes[nodeA].pos && nodes[nodeB].pos) {
+                        L.polyline([nodes[nodeA].pos, nodes[nodeB].pos], {
                             color: 'gray',
                             weight: 1.5,
                             opacity: 0.6
@@ -238,18 +247,18 @@ class NetworkVisualizerWidget(QWidget):
         self.map.save(data, close_file=False)
         self.web_view.setHtml(data.getvalue().decode())
 
-    def addNode(self, ip_last_byte, node_type):
-        node_id = ip_last_byte
+    def addNode(self, node_id, node_type):
         if node_type == "MONITOR":
             return
 
+        # Map node IDs to match your V2X setup (including handler as node 11)
         self.nodes[node_id] = {
             "pos": None,
             "type": node_type,
             "status": "Active",
             "color": 'blue',
-            "ip_last_byte": ip_last_byte,
-            "is_master": node_id == 1,
+            "node_id": node_id,
+            "is_master": node_id == 11,  # Handler (Node 11) starts as master
             "last_seen": time.time()
         }
 
@@ -359,7 +368,7 @@ class NetworkVisualizerWidget(QWidget):
         return nodes
 
     def _redraw(self):
-        print("[DEBUG] Starting map redraw...")
+        # print("[DEBUG] Starting map redraw...")
 
         # Update the map with the new node positions
         self.web_view.page().runJavaScript("updateNodes('" + json.dumps(self.nodes) + "')")
@@ -378,11 +387,11 @@ class NetworkMonitorThread(QThread):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        # V2X communication settings
+        # V2X communication settings - Updated for your 3-node setup
         self.gui_group = 1     # GUI's group
         self.gui_id = 1        # GUI's ID
-        self.handler_group = 11  # Handler's group
-        self.handler_id = 10     # Handler's ID
+        self.handler_group = 1  # Handler's group (changed from 11 to 1)
+        self.handler_id = 11     # Handler's ID (changed from 12 to 11)
 
         # Initialize drone_v2x
         try:
@@ -472,8 +481,8 @@ class NetworkMonitorThread(QThread):
         if msg_type == 'LOG':
             self.message_received.emit(data['message'])
         elif msg_type == 'NODE_ADDED':
-            logger.info(f"Adding node: IP last byte={data['ip_last_byte']}, type={data['node_type']}")
-            self.node_added.emit(data['ip_last_byte'], data['node_type'])
+            logger.info(f"Adding node: Node ID={data['node_id']}, type={data['node_type']}")
+            self.node_added.emit(data['node_id'], data['node_type'])
         elif msg_type == 'NODE_STATUS':
             self.node_status_changed.emit(data['node_id'], data['status'])
         elif msg_type == 'MASTER_CHANGED':
@@ -515,17 +524,21 @@ class CommandsPanel(QWidget):
         self.node_selector_label = QLabel("Select Node:")
         node_layout.addWidget(self.node_selector_label, 1, 0, 1, 3)
         
-        # Add buttons for common node IDs (1-10)
-        for i in range(10):
-            btn = QPushButton(f"Node {i+1}")
-            btn.clicked.connect(lambda checked, node_id=i+1: self.select_node(node_id))
-            node_layout.addWidget(btn, 2 + (i // 3), i % 3)
+        # Add buttons for your specific node IDs (11, 13, 14) including handler
+        node_ids = [11, 12, 13]
+        for i, node_id in enumerate(node_ids):
+            btn_text = f"Node {node_id}"
+            if node_id == 11:
+                btn_text += " (Handler)"
+            btn = QPushButton(btn_text)
+            btn.clicked.connect(lambda checked, node_id=node_id: self.select_node(node_id))
+            node_layout.addWidget(btn, 2, i)
         
         # Add "All Nodes" button
         all_nodes_btn = QPushButton("All Nodes")
         all_nodes_btn.clicked.connect(lambda: self.select_node("all"))
         all_nodes_btn.setStyleSheet("background-color: #d0e0ff;")  # Light blue background to highlight
-        node_layout.addWidget(all_nodes_btn, 2 + (10 // 3), 1)  # Position in the middle of the last row
+        node_layout.addWidget(all_nodes_btn, 3, 0, 1, 3)  # Span across all three columns
             
         node_group.setLayout(node_layout)
         layout.addWidget(node_group)
@@ -761,7 +774,7 @@ class CommandsPanel(QWidget):
 class MonitorGUI(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Network Monitor")
+        self.setWindowTitle("Network Monitor - 3 Node System")
         self.setMinimumSize(1200, 700)
 
         # Create central widget with the map
@@ -844,7 +857,9 @@ class MonitorGUI(QMainWindow):
         self.monitor_thread.start()
 
         # Log initial message
-        self.log_message("Network Monitor started successfully")
+        self.log_message("Network Monitor started successfully - 3 Node System (Including Handler)")
+        self.log_message("Handler: Group 1, ID 11 (Controllable)")
+        self.log_message("Nodes: 13, 14")
 
     def filter_existing_nodes(self, node_id, status):
         if node_id not in self.node_statuses:
@@ -860,31 +875,36 @@ class MonitorGUI(QMainWindow):
         status_text += "-" * 40 + "\n"
 
         # Format string for consistent spacing
-        format_str = "{icon}  {ip:<16} | {role}\n"
+        format_str = "{icon}  {id:<8} | {role}\n"
 
         for node_id, status in sorted(self.node_statuses.items()):
             icon = "🐔" if status["is_master"] else "🐣"
-            ip = f"192.168.199.{node_id}"
+            node_display = f"Node {node_id}"
+            if node_id == 11:
+                node_display += " (Handler)"
             role = "Master" if status["is_master"] else "Regular"
 
             status_text += format_str.format(
                 icon=icon,
-                ip=ip,
+                id=node_display,
                 role=role
             )
 
         self.status_text.setText(status_text)
 
-    def add_node(self, ip_last_byte, node_type):
+    def add_node(self, node_id, node_type):
         """Handle new node addition"""
         if node_type != "MONITOR":
-            self.node_statuses[ip_last_byte] = {
-                "is_master": False,  # Initialize all nodes as non-master
+            self.node_statuses[node_id] = {
+                "is_master": node_id == 11,  # Handler (Node 11) starts as master
                 "status": "Active"
             }
-            self.network_viz.addNode(ip_last_byte, node_type)
+            self.network_viz.addNode(node_id, node_type)
             self.update_status_display()
-            self.log_message(f"Node added: 192.168.199.{ip_last_byte} ({node_type})")
+            node_display = f"Node {node_id}"
+            if node_id == 11:
+                node_display += " (Handler)"
+            self.log_message(f"Node added: {node_display} ({node_type})")
 
     def update_node_status(self, node_id, status):
         """Handle node status updates"""
@@ -892,7 +912,7 @@ class MonitorGUI(QMainWindow):
             self.node_statuses[node_id]["status"] = status
             self.network_viz.updateNodeStatus(node_id, status)
             self.update_status_display()
-            self.log_message(f"Node 192.168.199.{node_id} status updated: {status}")
+            self.log_message(f"Node {node_id} status updated: {status}")
 
     def update_master_status(self, master_id):
         """Handle master node changes"""
@@ -900,7 +920,7 @@ class MonitorGUI(QMainWindow):
             self.node_statuses[node_id]["is_master"] = (node_id == master_id)
         self.network_viz.updateMasterStatus(master_id)
         self.update_status_display()
-        self.log_message(f"Master changed to node 192.168.199.{master_id}")
+        self.log_message(f"Master changed to node {master_id}")
 
     def remove_node(self, node_id):
         """Handle node removal"""
@@ -908,7 +928,7 @@ class MonitorGUI(QMainWindow):
             del self.node_statuses[node_id]
             self.network_viz.removeNode(node_id)
             self.update_status_display()
-            self.log_message(f"Node removed: 192.168.199.{node_id}")
+            self.log_message(f"Node removed: Node {node_id}")
 
     def log_message(self, message):
         """Add a message to the event log with timestamp"""
@@ -926,8 +946,9 @@ def main():
         window = MonitorGUI()
         window.show()
         print("\nGUI running with V2X communication:")
-        print("Group: 1, ID: 1")
-        print("Connected to handler at Group: 11, ID: 10")
+        print("GUI: Group 1, ID 1")
+        print("Connected to handler at Group 1, ID 11")
+        print("Controllable nodes: 11 (Handler), 13, 14")
         sys.exit(app.exec_())
     except Exception as e:
         logger.error(f"Error starting GUI: {e}")
