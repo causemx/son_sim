@@ -238,6 +238,17 @@ class Node:
                     result = {'success': True, 'message': 'Disconnected successfully'}
                 else:
                     result = {'success': False, 'message': 'Drone not connected'}
+            
+            elif command == 'fly_to_here':
+                if params and 'distance' in params and 'angle' in params:
+                    distance = float(params['distance'])
+                    angle = float(params['angle'])
+                    result = {
+                        'success': self.drone_controller.fly_to_here(distance, angle),
+                        'message': f'Fly command sent - distance: {distance}m, angle: {angle}°'
+                    }
+                else:
+                    result = {'success': False, 'message': 'Distance and angle parameters required'}
 
         except Exception as e:
             result = {'success': False, 'message': f'Error executing command: {str(e)}'}
