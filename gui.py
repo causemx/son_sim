@@ -5,6 +5,7 @@ import sys
 import time
 import logging
 import random
+import threading
 from PyQt5.QtWidgets import (
     QApplication,
     QMainWindow,
@@ -38,6 +39,46 @@ logging.basicConfig(
     handlers=[logging.StreamHandler(sys.stdout)]
 )
 logger = logging.getLogger(__name__)
+
+
+# Global initialization status
+_init_status = None
+_init_message = ""
+
+def init_callback(status: int, message: str):
+    """Callback function that captures the init status"""
+    global _init_status, _init_message
+    
+    _init_status = status
+    _init_message = message
+    
+    if status == 1:
+        logger.info(f"Init success: {message}")
+    else:
+        logger.warning(f"Init status {status}: {message}")
+
+def wait_for_initialization():
+    """Wait for initialization to complete or timeout"""
+    logger.info("Waiting for drone_v2x initialization...")
+    
+    # Set the callback
+    drone_v2x.set_init_callback(init_callback)
+    
+    # Start initialization
+    drone_v2x.init()
+    
+     # Wait for initialization to complete
+    while _init_status is None or _init_status == 0:
+        print("Initializing drone_v2x ing...")
+        time.sleep(1)  # Wait 1 second between status checks
+    
+    # Check final result
+    if _init_status == 1:
+        print("Drone V2X initialization successful!")
+        return True
+    else:
+        print(f"Drone V2X initialization failed: {_init_message}")
+        return False
 
 class JSChannel(QObject):
     @pyqtSlot(str)
@@ -392,14 +433,6 @@ class NetworkMonitorThread(QThread):
         self.gui_id = 1        # GUI's ID
         self.handler_group = 1  # Handler's group (changed from 11 to 1)
         self.handler_id = 11     # Handler's ID (changed from 12 to 11)
-
-        # Initialize drone_v2x
-        try:
-            drone_v2x.init()
-            logger.info(f"GUI initialized with V2X communication - Group {self.gui_group}, ID {self.gui_id}")
-        except Exception as e:
-            logger.error(f"Failed to initialize V2X communication: {e}")
-            raise
 
         # Send initial connection message
         self.send_connection_message()
@@ -943,6 +976,12 @@ class MonitorGUI(QMainWindow):
 def main():
     app = QApplication(sys.argv)
     try:
+
+        # Wait for initialization before starting GUI
+        if not wait_for_initialization():
+            print("Failed to initialize drone_v2x. GUI will not start.")
+            return
+
         window = MonitorGUI()
         window.show()
         print("\nGUI running with V2X communication:")

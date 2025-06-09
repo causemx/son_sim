@@ -2,6 +2,7 @@ import enum
 import random
 import socket
 import struct
+from typing import Callable, Optional
 
 #region Constants
 class Role(enum.Enum):
@@ -40,6 +41,8 @@ _autoack = True
 #region debug
 _debug_print_on = False
 
+_init_callback: Optional[Callable[[int, str], None]] = None
+
 def _debug_print(*args, **kwargs):
     global _debug_print_on
     if _debug_print_on:
@@ -59,6 +62,18 @@ def _dump_bytes(buf):
             print()
     return
 #endregion
+
+def set_init_callback(callback: Callable[[int, str], None]):
+    global _init_callback
+    _init_callback = callback
+
+def _notify_init(status: int, message: str):
+    global _init_callback
+    if _init_callback is not None:
+        try:
+            _init_callback(status, message)
+        except Exception as e:
+            print(f"Callback error: {e}")
 
 #region init
 _initialized = False
@@ -81,25 +96,33 @@ def _do_init(group, id, role):
 def init(force = False):
     global _initialized
 
-    if _initialized:
-        if (force):
-            pass
-        else:
-            return True
+    if _initialized and not force:
+        _notify_init(1, "Already initialized")
+        return True
+    
+    _notify_init(0, "Starting initialization...",)
     
     rpt_fd = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    rpt_fd.settimeout(10)
     
+    '''
     try:
         rpt_fd.bind(_V2X_RPT_ADDR)
-    except Exception as e:
+    except socket.error as e:
         _debug_print(f"Bind() error: {e}")
-        raise e
-
+        _notify_init(0, f"Bind() error: {e}")
+        return False
+        # raise e
+    '''
+        
     _debug_print("init: Heartbeat socket binded, reading my address...")
 
     try_count = 3
-    while try_count > 0:
+    while True > 0:
         try:
+            rpt_fd.bind(_V2X_RPT_ADDR)
+            _notify_init(0, "Waiting for configuation...")
+
             buff, _ = rpt_fd.recvfrom(256)
             _debug_print("init: recvfrom() success.")
             
@@ -115,18 +138,23 @@ def init(force = False):
                     break
                 else:
                     _debug_print("init: Unknown addr", buff[2], buff[3])
+                    _notify_init(0, f"init: Unknown addr {buff[2]} {buff[3]}")
                     pass
-        except Exception as e:
-            _debug_print(f"recvfrom() error: {e}")
+        except socket.error as e:
+            _debug_print(f"socket error: {e}")
+            _notify_init(0, f"socket error: {e}")
             continue
-        try_count -= 1
+        # try_count -= 1
         
     rpt_fd.close()
     _debug_print("init: Heartbeat socket closed.")
 
     if try_count <= 0:
-        raise Exception("Failed to get device configuration.")
+        _notify_init(0, "Failed to get device configuration.")
+        # raise Exception("Failed to get device configuration.")
     _initialized = True
+    _notify_init(1, "init success")
+    return True
 #endregion
 
 #region send/recv
