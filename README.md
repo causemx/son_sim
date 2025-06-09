@@ -41,12 +41,12 @@ The handler is the central coordinator for the network:
 python handler.py
 ```
 
-The handler will start with an interactive shell for issuing commands.
+The handler will start and (group, id) will be (1, 11).
 
 
 ### 2. Start the GUI
 
-The GUI provides visual monitoring and control:
+The GUI provides visual monitoring and control and (group, id) was (1, 1):
 
 ```bash
 python gui.py
@@ -54,11 +54,11 @@ python gui.py
 
 ### 3. Start Nodes
 
-Start one or more nodes, specifying their IP addresses:
+Start one or more nodes, specifying their node id:
 
 ```bash
-python node.py 192.168.199.1
-python node.py 192.168.199.2
+python node.py 12
+python node.py 13
 # Add more nodes as needed
 ```
 
@@ -104,7 +104,7 @@ Nodes will attempt to connect to their drones automatically on startup:
 If auto-connect fails, you can manually connect a node using the handler:
 
 ```bash
-connect 1  # Connect node with ID 1
+connect 12  # Connect node with ID 1
 ```
 
 Once connected, the node will register with the handler and start sending status updates.
@@ -149,6 +149,7 @@ The GUI visualizes the network in real-time:
 - `node.py` - Node executable script
 - `handler.py` - Network handler and command shell
 - `controller.py` - Drone controller using pymavlink
+- `drone_v2x.py` - DSRC module driver for communication(it's suck)
 - `gui.py` - Network visualization interface
 
 ## Emergency Procedures
