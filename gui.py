@@ -5,7 +5,7 @@ import sys
 import time
 import logging
 import random
-import threading
+
 from PyQt5.QtWidgets import (
     QApplication,
     QMainWindow,
@@ -55,7 +55,9 @@ def init_callback(status: int, message: str):
     if status == 1:
         logger.info(f"Init success: {message}")
     else:
-        logger.warning(f"Init status {status}: {message}")
+        # logger.warning(f"Init status {status}: {message}")
+        pass
+        
 
 def wait_for_initialization():
     """Wait for initialization to complete or timeout"""
@@ -979,15 +981,12 @@ def main():
 
         # Wait for initialization before starting GUI
         if not wait_for_initialization():
-            print("Failed to initialize drone_v2x. GUI will not start.")
+            logger.error("Failed to initialize drone_v2x. GUI will not start.")
             return
 
         window = MonitorGUI()
         window.show()
-        print("\nGUI running with V2X communication:")
-        print("GUI: Group 1, ID 1")
-        print("Connected to handler at Group 1, ID 11")
-        print("Controllable nodes: 11 (Handler), 13, 14")
+        logger.info("\nGUI running with V2X communication, GUI: Group 1, ID 1")
         sys.exit(app.exec_())
     except Exception as e:
         logger.error(f"Error starting GUI: {e}")
